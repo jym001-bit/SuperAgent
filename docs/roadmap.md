@@ -22,7 +22,7 @@
 | 可观测性 | ✅ Prometheus `/metrics`、`/v1/audit` 游标分页、`/v1/costs` |
 | 运维 | ✅ `/archive` 归档导出与清理；`/verify` 状态库自检；备份脚本；运维手册 |
 | 交付 | ✅ CI（Linux 双 JDK）、Release、Dockerfile、compose、systemd 加固 |
-| 评测 | ✅ harness、9 个 golden task、离线/真实双模式；两次真实运行（6/9 → 8/9，传输层失败已归零），并区分传输层与模型口径 |
+| 评测 | ✅ harness、9 个 golden task、离线/真实双模式；四次真实运行（6/9 → 8/9，传输层失败归零；歧义任务从「直接改代码」变为「提问 + 无改动」），区分传输层与模型口径 |
 | 规模 | ⚠️ 仍单实例、单仓库、单写者；多仓库/分布式未做 |
 
 ## 阶段计划
