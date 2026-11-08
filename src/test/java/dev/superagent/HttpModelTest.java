@@ -50,19 +50,26 @@ class HttpModelTest {
         assertEquals("opaque reasoning",requests.get(1).path("messages").path(1).path("reasoning_content").asText());
         assertEquals("c1",requests.get(1).path("messages").path(2).path("tool_call_id").asText());
     }
-    @Test void standardProviderOmitsSpecialFieldsAndDoesNotRetryHttpErrors()throws Exception {
+    @Test void standardProviderOmitsSpecialFieldsAndDoesNotRetryClientErrors()throws Exception {
         AtomicInteger calls=new AtomicInteger();AtomicReference<JsonNode> request=new AtomicReference<>();
-        String base=serve(x->{calls.incrementAndGet();request.set(Json.parse(new String(x.getRequestBody().readAllBytes())));respond(x,429,"private server error");});
+        String base=serve(x->{calls.incrementAndGet();request.set(Json.parse(new String(x.getRequestBody().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8)));respond(x,400,"private server error");});
         ModelClient client=new HttpModelClient(config(base,"standard",Duration.ofSeconds(2)));
-        Exception error=assertThrows(Exception.class,()->client.complete(List.of(Json.message("user","hello")),null));
-        assertTrue(error.getMessage().contains("429"));assertFalse(error.getMessage().contains("private server error"));
-        assertFalse(request.get().has("tools"));assertFalse(request.get().has("thinking"));assertEquals(1,calls.get());
+        dev.superagent.model.ModelUnavailable error=assertThrows(dev.superagent.model.ModelUnavailable.class,
+                ()->client.complete(List.of(Json.message("user","hello")),null));
+        assertTrue(error.getMessage().contains("400"));assertFalse(error.retryable());
+        assertTrue(error.getMessage().contains("private server error"),"错误体要带出来，否则只能猜");
+        assertFalse(request.get().has("tools"));assertFalse(request.get().has("thinking"));
+        assertEquals(1,calls.get(),"4xx 是配置问题，重试只会白烧额度");
     }
     @Test void timeoutStopsRequestAndInterruptCancelsAnInFlightRequest()throws Exception {
         CountDownLatch entered=new CountDownLatch(1);
         String base=serve(x->{entered.countDown();try{Thread.sleep(10000);}catch(InterruptedException e){Thread.currentThread().interrupt();}finally{x.close();}});
         ModelClient client=new HttpModelClient(config(base,"standard",Duration.ofMillis(150)));
-        assertThrows(java.net.http.HttpTimeoutException.class,()->client.complete(List.of(Json.message("user","timeout")),null));
+        dev.superagent.model.ModelUnavailable timeout=assertThrows(dev.superagent.model.ModelUnavailable.class,
+                ()->client.complete(List.of(Json.message("user","timeout")),null));
+        assertFalse(timeout.retryable(),"请求已发出，超时结果不明，不能自动重发");
+        assertEquals(1,timeout.attempts());
+        assertTrue(timeout.getCause() instanceof java.net.http.HttpTimeoutException);
         CountDownLatch canceled=new CountDownLatch(1);
         ModelClient longClient=new HttpModelClient(config(base,"standard",Duration.ofSeconds(30)));
         Thread caller=new Thread(()->{try{longClient.complete(List.of(Json.message("user","cancel")),null);}catch(InterruptedException e){canceled.countDown();}catch(Exception ignored){}});

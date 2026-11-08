@@ -13,6 +13,14 @@ public record EvalTaskResult(String id, String name, boolean success, String sta
 
     private static final int ANSWER_LIMIT = 2000;
 
+    /**
+     * 传输层失败（连接失败、请求超时、5xx）不是模型能力问题。单独标出来，避免把基础设施故障
+     * 算进「模型成功率」，也避免为了修网络去改提示词。
+     */
+    public boolean infraFailure() {
+        return error != null && error.contains("模型请求失败");
+    }
+
     public EvalTaskResult {
         failures = List.copyOf(failures == null ? List.of() : failures);
         checks = List.copyOf(checks == null ? List.of() : checks);
@@ -26,6 +34,7 @@ public record EvalTaskResult(String id, String name, boolean success, String sta
         root.put("success", success);
         root.put("status", status);
         root.put("error", error);
+        root.put("infraFailure", infraFailure());
         ArrayNode failureArray = Json.array();
         failures.forEach(failureArray::add);
         root.set("failures", failureArray);

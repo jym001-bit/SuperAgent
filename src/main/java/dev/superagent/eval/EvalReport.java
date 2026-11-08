@@ -39,6 +39,21 @@ public record EvalReport(String mode, String model, String startedAt, String fin
         return total() == 0 ? 0d : passed() / (double) total();
     }
 
+    /** 传输层失败的个数：这些任务根本没跑起来，不能算作模型能力失败。 */
+    public int infraFailures() {
+        return (int) tasks.stream().filter(EvalTaskResult::infraFailure).count();
+    }
+
+    /** 扣掉传输层失败后，真正由模型/判据决定的任务数。 */
+    public int modelAttributable() {
+        return total() - infraFailures();
+    }
+
+    /** 模型口径通过率：分母不含传输层失败。 */
+    public double modelPassRate() {
+        return modelAttributable() == 0 ? 0d : passed() / (double) modelAttributable();
+    }
+
     public long totalModelCalls() {
         return tasks.stream().mapToLong(EvalTaskResult::modelCalls).sum();
     }
@@ -76,6 +91,9 @@ public record EvalReport(String mode, String model, String startedAt, String fin
         root.put("passed", passed());
         root.put("failed", failed());
         root.put("passRate", round(passRate(), 4));
+        root.put("infraFailures", infraFailures());
+        root.put("modelAttributable", modelAttributable());
+        root.put("modelPassRate", round(modelPassRate(), 4));
         root.put("totalModelCalls", totalModelCalls());
         root.put("avgModelCalls", round(avgModelCalls(), 2));
         root.put("totalTokens", totalTokens());
@@ -104,6 +122,10 @@ public record EvalReport(String mode, String model, String startedAt, String fin
         text.append("- 汇总：总任务 ").append(total()).append(" / 通过 ").append(passed())
                 .append(" / 失败 ").append(failed()).append(" / 通过率 ")
                 .append(percent()).append('\n');
+        text.append("- 口径：其中传输层失败 ").append(infraFailures())
+                .append(" 个（连接失败、请求超时、5xx，不属于模型能力）；模型口径通过率 ")
+                .append(String.format(Locale.ROOT, "%.1f%%", modelPassRate() * 100))
+                .append("（").append(passed()).append('/').append(modelAttributable()).append("）\n");
         text.append("- 平均：模型调用 ").append(format(avgModelCalls(), 2))
                 .append(" 次，tokens ").append(format(avgTokens(), 1))
                 .append("，耗时 ").append(format(avgDurationMs(), 0)).append(" ms；总计模型调用 ")
@@ -114,7 +136,7 @@ public record EvalReport(String mode, String model, String startedAt, String fin
         text.append("|---|---|---|---|---:|---:|---:|---|\n");
         for (EvalTaskResult task : tasks) {
             text.append("| `").append(task.id()).append("` | ").append(escape(task.name()))
-                    .append(" | ").append(task.success() ? "通过" : "失败")
+                    .append(" | ").append(task.success() ? "通过" : (task.infraFailure() ? "失败(传输)" : "失败"))
                     .append(" | ").append(task.status())
                     .append(" | ").append(task.modelCalls())
                     .append(" | ").append(task.tokens())

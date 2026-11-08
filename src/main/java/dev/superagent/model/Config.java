@@ -35,6 +35,20 @@ public record Config(Path stateDir, String baseUrl, String model, String apiKey,
                 Duration.ofSeconds(integer(e,"SUPERAGENT_HTTP_TIMEOUT_SECONDS",120)));
     }
 
+    /** 模型调用的重试次数（不含首次）。0 表示一次都不重试；上限 5 次，避免网络故障时放大计费风险。 */
+    public int modelRetries() {
+        String raw = System.getenv("SUPERAGENT_MODEL_RETRIES");
+        if (raw == null || raw.isBlank()) raw = System.getProperty("superagent.modelRetries", "2");
+        try { return Math.max(0, Math.min(5, Integer.parseInt(raw.strip()))); }
+        catch (NumberFormatException error) { throw new IllegalArgumentException("SUPERAGENT_MODEL_RETRIES 必须是整数"); }
+    }
+
+    /** 建立连接的超时：比整请求超时短，避免一个连不上的地址把整个调用预算耗光。 */
+    public Duration modelConnectTimeout() {
+        Duration cap = Duration.ofSeconds(15);
+        return httpTimeout().compareTo(cap) < 0 ? httpTimeout() : cap;
+    }
+
     static String resolveKey(Map<String, String> env, Path localFile, String provider, String baseUrl) {
         for (String name : new String[]{"SUPERAGENT_API_KEY", "DEEPSEEK_API_KEY"}) {
             String key = env.get(name);

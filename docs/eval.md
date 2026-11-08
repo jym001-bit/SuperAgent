@@ -234,3 +234,36 @@ mvn -o test -Dtest='dev.superagent.eval.*Test'
 - `mvn -o` 要求本地仓库已有编译与 surefire 插件、JUnit 5 依赖（跑过一次 `mvn package` 即满足）。
 - 每个任务都把 `source` 与 `state` 保留在 `target/eval-<uuid>/`，多跑几次会占用磁盘，可整体删除 `target/eval-*`。
 - 离线脚本与数据集内容绑定；改动 setup 文件后要同步更新对应 `script` 与 `checks`，否则离线模式会先暴露不一致。
+
+## 真实模型基线（2026-11-08）
+
+首次真实模型运行，命令 `scripts/eval.ps1 -Real`，模型 `deepseek-flash @ https://api.deepseek.com`。
+
+| 指标 | 数值 |
+|---|---|
+| 总任务 / 通过 / 失败 | 9 / 6 / 3 |
+| 原始通过率 | 66.7% |
+| 平均模型调用 | 6.67 次（总计 60 次） |
+| 平均 tokens | 14532.3（总计 130791） |
+| 总耗时 | 203.7 秒 |
+
+**这 3 个失败不是同一类问题，必须分开读：**
+
+| 任务 | 原始现象 | 归类 | 说明 |
+|---|---|---|---|
+| `add-tests-maven` | `状态=FAILED`，`ConnectException: null`，模型调用 1 次、token 0 | **传输层** | 请求根本没送达，模型没有机会作答 |
+| `fix-compile-error` | 同上 | **传输层** | 同上 |
+| `ambiguous-refusal` | `状态=READY`，但改了 `Report.java` | **模型行为** | 歧义需求下没有提问，直接动手改代码 |
+
+所以这次运行的**模型口径通过率**是 6/7 = 85.7%，而不是 66.7%。报告现在会自动区分这两类：JSON 里的 `infraFailures` / `modelAttributable` / `modelPassRate`，Markdown 汇总里的「口径」一行与表格里的「失败(传输)」标记。
+
+这次运行直接暴露了一个系统缺陷并已修复：**模型调用遇到连接失败时一次都不重试，且错误信息只有 `ConnectException: null`**。现在：
+
+- 连接失败、连接超时、HTTP 429/503 会按指数退避重试（默认 2 次，可用 `SUPERAGENT_MODEL_RETRIES` 调整，上限 5）；
+- 请求超时、响应中断、5xx 一律**不**重试——服务端可能已经计费，自动重发会造成重复收费，这些情况保留现场由 `/resume` 处理；
+- 错误信息变成 `模型请求失败[api.deepseek.com/chat/completions]，先后尝试 3 次：连接失败，请求未送达（ConnectException: null）`，能直接看出打到哪、第几次、卡在哪一层。
+
+重跑建议：先确认重试确实把传输层失败压下去，再开始看模型口径的数字。单次运行有波动，要判断趋势至少跑 3 次取中位数。
+
+>`ambiguous-refusal` 那次失败是真实结论，不要为了让数字好看去放宽 `no_changes` 判据——这个任务的判据本身就是「歧义需求下不应该动文件」。
+
