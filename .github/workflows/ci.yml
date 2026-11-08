@@ -16,9 +16,12 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# 最小权限：CI 只需要读仓库内容。
+# 最小权限：CI 只需要读仓库内容；issues: write 仅用于下面的「失败时自动留证」。
+# 之所以要写 issue：Actions 日志接口需要身份，未登录环境下无法读取失败原因；
+# 把日志尾部写进公开 issue，任何有仓库链接的人都能自查，也不用额外维护日志查询工具。
 permissions:
   contents: read
+  issues: write
 
 jobs:
   verify:
@@ -54,8 +57,37 @@ jobs:
           git config --global advice.detachedHead false
 
       # verify 覆盖 compile + test + shade package，产物即 target/superagent-java.jar。
+      # tee 保留完整构建日志，供失败时取证；pipefail 保证 mvn 的退出码不被管道吞掉。
       - name: 编译、运行全部离线测试并打包
-        run: mvn -B -ntp verify
+        shell: bash
+        run: |
+          set -o pipefail
+          mvn -B -ntp verify 2>&1 | tee mvn-build.log
+
+      # 失败时把日志尾部发成公开 issue。只在 JDK 17 上发一次：双版本矩阵通常同因失败，
+      # 各发一条只会把 issue 列表刷满；若只有 JDK 21 挂，仍需人工到 Actions 页面看日志。
+      - name: 失败时把构建日志尾部发成 issue
+        if: failure() && matrix.java == 17
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ ! -f mvn-build.log ]; then echo "没有构建日志，跳过"; exit 0; fi
+          {
+            echo "CI 在 JDK ${GITHUB_REF_NAME} 提交 ${GITHUB_SHA} 上失败。"
+            echo
+            echo "- run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "- 触发: ${GITHUB_EVENT_NAME}"
+            echo
+            echo '构建日志尾部（完整日志需登录查看 Actions）：'
+            echo
+            echo '```'
+            tail -n 150 mvn-build.log
+            echo '```'
+          } > ci-failure.md
+          gh issue create --title "CI 失败 ${GITHUB_SHA:0:7}" --body-file ci-failure.md \
+            || echo "创建 issue 失败（可能未开启 issue 或权限不足）"
 
       # 冒烟检查：确认 fat jar 的 Main-Class 与 --serve-local 入口真实可用，
       # 避免“测试通过但产物打不开”这类交付问题。
