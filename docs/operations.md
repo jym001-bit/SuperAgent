@@ -67,6 +67,47 @@ done
 
 单任务细节在 `GET /v1/tasks/{id}` 的 `tokens`、`calls`、`contextTokens`、`contextTrims` 字段里。`contextTrims` 是上下文折叠次数，持续增长说明任务对话已经很长，可能需要拆分任务。
 
+## 状态库自检
+
+```text
+/verify                    # CLI
+GET /v1/verify             # 运维 API，需要 Bearer 令牌
+```
+
+自检只读，不修改数据，返回 `healthy` 与逐项结果（`checks[]`，每项含 `name` / `ok` / `detail`）：
+
+| 检查项 | 说明 |
+|---|---|
+| `sqlite_integrity` | `PRAGMA integrity_check` |
+| `schema_version` | 是否为期望版本 2 |
+| `foreign_keys` | `PRAGMA foreign_key_check` 是否有违反 |
+| `orphan_messages`、`orphan_calls` | 追加表里有、主表里没有对应任务的记录 |
+| `status_column` | 状态列与任务 JSON 里的状态不一致 |
+| `message_sequence`、`call_sequence` | 追加表 `seq` 有缺口或重复 |
+| `dangling_children` | 父任务的 `children` 指向不存在的任务 |
+| `workspace_present` | 已标记准备完成但副本目录已经不在了 |
+
+建议在升级后、归档前后、异常重启后各跑一次。发现问题时**不要**直接删库重建：先停服务、备份整个状态目录，再按 `detail` 定位。自检报错通常是运维操作或磁盘问题留下的痕迹，而不是代码缺陷。
+
+## 只读命令白名单
+
+默认关闭。开启方式：环境变量 `SUPERAGENT_AUTO_APPROVE_READONLY=1`，或 JVM 系统属性 `-Dsuperagent.autoApproveReadOnly=true`。
+
+开启后，命令必须同时满足以下条件才免去人工点击：
+
+- 不含任何 shell 元字符：`;` `&` `|` `<` `>` `$` 反引号 `(` `)` `{` `}` `[` `]` 换行 `%` `^` `*` `?` `!`；
+- 首个 token 在窄白名单内（`git`、版本查询类的 `mvn`/`javac`/`java`/`node`/`npm`/`python`/`go`/`cargo`/`dotnet`，以及 `pwd`/`ls`/`dir`/`cat`/`type`/`head`/`tail`/`wc`/`grep`/`findstr`/`stat`/`file`）；
+- `git` 只允许 `status`/`diff`/`log`/`show`/`branch`/`rev-parse`/`ls-files`/`describe`/`blame`/`shortlog`，且参数里不能出现 `-c`、`--exec`、`--ext-diff`、`--textconv`、`--output`、`--upload-pack`、`--receive-pack`、`--config-env` 这类能间接执行外部程序的选项；
+- 构建工具只允许版本查询（`-v` / `--version` / `-version`），`mvn test` 一律人工审批。
+
+安全底线：
+
+- 自动批准**仍然**写审批记录（最终 `decision` 为 `USED_AUTO`）和 `approval_auto_approved` 审计事件，事后查得出这一次不是人工点的；
+- `run_test` 永不自动批准，它执行的是仓库里的构建脚本；
+- 判不定就退回人工。白名单写窄的代价只是多点一次，写宽了就是绕过审批。
+
+不建议在共享部署或对公网暴露的实例上开启。
+
 ## 生命周期与归档
 
 首版不自动清理。现在提供显式归档：

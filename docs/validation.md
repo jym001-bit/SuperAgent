@@ -2,7 +2,7 @@
 
 ## 2026-11-08 企业级执行内核
 
-`mvn package` 通过 **76 个测试**（上一阶段 33 个），0 失败、0 错误、0 跳过，生成 `target/superagent-java.jar`。
+`mvn package` 通过 **82 个测试**（上一阶段 33 个），0 失败、0 错误、0 跳过，生成 `target/superagent-java.jar`。
 
 这一阶段改的是内核，不是界面：存储从「整块 JSON 每次重写」变成「骨架 + 追加表」，调度从 30 毫秒全表轮询变成显式唤醒，模型请求开始受上下文预算约束，工具面收敛到统一注册表，并补齐了指标、审计、归档与评测。
 
@@ -14,13 +14,15 @@
 | 读一致性 | 3 个读线程与写线程并发 120 次「追加消息 + 更新进度」，断言进度与消息条数始终来自同一快照，无撕裂读 |
 | 指标与审计 | `/metrics` 数值与真实库一致；`/v1/audit` 按任务、类型、`seq` 游标过滤正确，未鉴权 401，非法游标 400 |
 | 生命周期 | 只归档 COMPLETED / CANCELED；父任务存活时子任务不被单独归档；导出 JSONL 含对话原文；重复执行安全 |
+| 只读白名单 | 默认关闭时同一命令仍进入 `WAITING_APPROVAL`；开启后免点击，但审批记录最终为 `USED_AUTO` 且写入 `approval_auto_approved` 事件；串联、管道、重定向、命令替换、`git -c`、`--ext-diff`、写操作与 `mvn test` 全部被拒 |
+| 状态库自检 | 健康库十项全绿；用第二个连接制造孤儿行、状态列不一致、序号缺口后逐项被准确定位，SQLite 完整性不误报 |
 | 上下文治理 | 超预算时 system 与首条需求保留，工具调用与结果整轮保留，最新一轮必留；摘要自身受限，收敛后不超过预算 |
 | 工具面 | 注册表定义、风险等级、分派一一对应；真实 git 的 status/diff/log；注入字符只作 pathspec；`run_test` 真实进程 exit=0/1，shell 首项被拒 |
 | 评测 harness | 9 个 golden task、判据引擎、脚本模型；判定逻辑对必然失败的任务确实返回失败，不是永远 pass |
 
 ### 环境注意
 
-`mvn test` 需要完整的进程与命名管道能力。在受限沙箱里 `git clone` 会以 `sh.exe: couldn't create signal pipe, Win32 error 5` 失败，表现为大量「15 秒未达条件」的假失败；放宽沙箱后同一份代码 76 个测试全绿。因此 CI 只在 `ubuntu-latest` 上跑（见 [CI 门禁](ci.md)）。
+`mvn test` 需要完整的进程与命名管道能力。在受限沙箱里 `git clone` 会以 `sh.exe: couldn't create signal pipe, Win32 error 5` 失败，表现为大量「15 秒未达条件」的假失败；放宽沙箱后同一份代码 82 个测试全绿。因此 CI 只在 `ubuntu-latest` 上跑（见 [CI 门禁](ci.md)）。
 
 ### 这一阶段仍未验证
 

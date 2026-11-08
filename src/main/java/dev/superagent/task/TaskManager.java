@@ -386,6 +386,7 @@ public final class TaskManager implements AutoCloseable {
     public Store.ArchiveSummary archiveOlderThan(java.time.Duration retention) throws Exception {
         return store.archiveBefore(Instant.now().minus(retention), config.stateDir().resolve("archive"));
     }
+    public Store.Verification verify() { return store.verify(); }
     public List<Task> list(){return store.list();}
     public Task get(String id){return store.get(id);}
     private void recover() {
@@ -427,7 +428,8 @@ public final class TaskManager implements AutoCloseable {
                 && task.approvals.stream().noneMatch(a -> a.decision.equals("PENDING") || a.decision.equals("APPROVED"));
     }
     private static void expire(Task t) {
-        for(Task.Approval a:t.approvals)if(a.decision.equals("PENDING")||a.decision.equals("APPROVED"))a.decision="EXPIRED";
+        for(Task.Approval a:t.approvals)
+            if(a.decision.equals("PENDING")||a.decision.equals("APPROVED")||a.decision.equals("AUTO_APPROVED"))a.decision="EXPIRED";
     }
     private static void requireText(String text) {if(text==null||text.isBlank())throw new IllegalArgumentException("内容不能为空");}
     @Override public synchronized void close() {

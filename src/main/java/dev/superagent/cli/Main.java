@@ -156,6 +156,13 @@ public final class Main {
                         + " 条，工具调用 " + summary.calls() + " 条，事件 " + summary.events()
                         + " 条）到 " + summary.file());
             }
+            case "/verify" -> {
+                Store.Verification verification = tasks.verify();
+                out.accept((verification.healthy() ? "状态库自检通过" : "状态库自检发现问题")
+                        + "（" + verification.checks().size() + " 项）");
+                for (Store.Check check : verification.checks())
+                    out.accept((check.ok() ? "  OK    " : "  问题  ") + check.name() + ": " + check.detail());
+            }
             case "/resume" -> {tasks.resume(id(rest));out.accept("已恢复；本次预算重置，未知结果的旧命令不会自动重放。");}
             case "/accept" -> {tasks.accept(id(rest));out.accept("已验收；源仓库未修改。");}
             case "/approvals" -> {
@@ -203,6 +210,7 @@ public final class Main {
             /diff <任务ID>              导出含新增文件的补丁
             /resolve <父任务ID>         手工处理合成冲突后重新导出
             /archive <保留天数>          把更早的已结束任务导出到状态目录 archive 后清理
+            /verify                     状态库自检（完整性、序号缺口、孤儿记录、缺失副本）
             /accept <任务ID>            验收完成，不自动应用到源仓库
             /help                       查看帮助
             /exit                       保存状态并退出

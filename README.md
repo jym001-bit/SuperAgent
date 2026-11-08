@@ -93,6 +93,7 @@ java -jar .\target\superagent-java.jar --repo D:\你的Git项目
 | `/diff <任务ID>` | 导出修改列表和含新增文件的二进制兼容补丁 |
 | `/accept <任务ID>` | 将待验收任务标记为已完成 |
 | `/archive <保留天数>` | 把更早的已结束任务导出到 `archive/*.jsonl` 后从主库清理 |
+| `/verify` | 状态库自检：完整性、序号缺口、孤儿记录、缺失副本 |
 | `/help`、`/exit` | 帮助、保存状态并退出 |
 
 `Ctrl+C` 在输入框中只取消本次输入；取消后台任务使用 `/cancel`。`Ctrl+D` 或 `/exit` 退出。
@@ -110,6 +111,8 @@ java -jar .\target\superagent-java.jar --repo D:\你的Git项目
 `execute_command` 在任务根目录运行，每次执行都要审批。Windows 使用不加载配置的 PowerShell，其他系统使用 `/bin/sh`。命令子进程只继承开发运行必需的环境变量，不自动继承模型 Key；默认 120 秒超时。需要项目专用秘密或特殊环境的命令，应由用户自行运行。
 
 **目录检查和审批不是操作系统沙箱。** 批准的 Shell 命令仍具有当前系统账号的权限，可以访问任务目录之外、联网或启动其他程序；应按终端展示的完整命令进行判断。取消会尝试终止所启动的进程树；系统级脱离或另行注册的服务不在本地进程管理保证范围内。
+
+只读命令白名单默认关闭。设置 `SUPERAGENT_AUTO_APPROVE_READONLY=1` 后，`git status`、`git diff`、`mvn -v`、`grep -rn TODO src` 这类命令可以免去逐次点击，但**仍然写入审批记录与 `approval_auto_approved` 审计事件**，事后能查出这次不是人工批准的。含 shell 元字符（`;` `|` `>` `$` 反引号等）或能间接执行外部程序的选项（`git -c`、`--ext-diff`）一律退回人工审批。`run_test` 无论开关如何都要审批，因为它执行的是仓库里的构建脚本。
 
 `/diff` 在任务暂停或待验收时导出，避免与正在运行的工具竞争。导出使用独立 Git index，不改 Worker 的暂存区，包含非忽略的新增文件及二进制差异；记录相对于创建时基线提交的改动。被 `.gitignore` 忽略且未跟踪的文件不进入补丁。
 
@@ -157,6 +160,7 @@ git apply '完整路径\changes.patch'
 | `SUPERAGENT_MAX_MODEL_CALLS` | `30`，每个任务本次执行累计 |
 | `SUPERAGENT_MAX_TOKENS` | `100000`，每个任务本次执行累计 |
 | `SUPERAGENT_CONTEXT_TOKENS` | `48000`，单次请求的上下文预算（超出后折叠早期轮次） |
+| `SUPERAGENT_AUTO_APPROVE_READONLY` | 关闭；设为 `1` 后只读命令免逐次批准，但仍写审批记录与审计事件 |
 | `SUPERAGENT_COMMAND_TIMEOUT_SECONDS` | `120` |
 | `SUPERAGENT_HTTP_TIMEOUT_SECONDS` | `120` |
 
@@ -172,7 +176,7 @@ mvn package
 java -jar .\target\superagent-java.jar --help
 ```
 
-测试只使用临时 Git 仓库、模拟模型、本地 HTTP 服务和本地命令，不访问真实模型、不启动 Docker。当前 76 个测试，覆盖审批、并行隔离、追问、取消、预算、路径边界、DeepSeek 思考字段回传、故障和恢复，包括子 JVM 执行外部命令后 `Runtime.halt` 的场景。
+测试只使用临时 Git 仓库、模拟模型、本地 HTTP 服务和本地命令，不访问真实模型、不启动 Docker。当前 82 个测试，覆盖审批、并行隔离、追问、取消、预算、路径边界、DeepSeek 思考字段回传、故障和恢复，包括子 JVM 执行外部命令后 `Runtime.halt` 的场景。
 
 内核阶段新增的行为验收：旧库迁移与幂等、对话追加顺序与事务回滚、调度载荷不含对话、并发读写不出现撕裂快照、审计游标、归档安全边界、上下文折叠不破坏锚点与工具协议、指标与真实状态一致、工具注册表契约、真实 git 命令与注入拒绝、评测判据真的会把失败任务判为失败。这些都是「删掉被测逻辑就会红」的用例，没有为凑数写 getter 测试。
 

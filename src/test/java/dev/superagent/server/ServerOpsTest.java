@@ -66,6 +66,12 @@ class ServerOpsTest {
                     assertEquals(200, costs.statusCode(), costs.body());
                     assertTrue(costs.body().contains("\"modelCalls\":0"), costs.body());
                     assertTrue(costs.body().contains("\"tokens\":0"), costs.body());
+
+                    assertEquals(401, get(client, base + "/v1/verify").statusCode(), "自检接口必须要求运维身份");
+                    HttpResponse<String> verify = authorized(client, base + "/v1/verify");
+                    assertEquals(200, verify.statusCode(), verify.body());
+                    assertTrue(verify.body().contains("\"healthy\":true"), verify.body());
+                    assertTrue(verify.body().contains("\"name\":\"schema_version\""), verify.body());
                 }
             }
         }

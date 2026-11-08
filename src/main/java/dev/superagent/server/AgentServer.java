@@ -165,6 +165,21 @@ final class AgentServer implements AutoCloseable {
             send(exchange, 200, costs);
             return;
         }
+        if (method.equals("GET") && path.equals("/v1/verify")) {
+            Store.Verification verification = store.verify();
+            Map<String, Object> body = new java.util.LinkedHashMap<>();
+            body.put("healthy", verification.healthy());
+            body.put("checks", verification.checks().stream()
+                    .map(check -> {
+                        Map<String, Object> item = new java.util.LinkedHashMap<>();
+                        item.put("name", check.name());
+                        item.put("ok", check.ok());
+                        item.put("detail", check.detail());
+                        return item;
+                    }).toList());
+            send(exchange, 200, body);
+            return;
+        }
         if (method.equals("GET") && path.equals("/v1/approvals")) {
             send(exchange, 200, store.waitingApprovals().stream()
                     .flatMap(t -> t.approvals.stream().filter(a -> a.decision.equals("PENDING"))

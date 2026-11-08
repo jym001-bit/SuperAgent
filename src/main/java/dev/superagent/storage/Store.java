@@ -443,6 +443,65 @@ public final class Store implements AutoCloseable {
         }
     }
 
+    // ------------------------------------------------------------ diagnostics
+
+    public record Check(String name, boolean ok, String detail) {}
+    public record Verification(List<Check> checks, boolean healthy) {}
+
+    /**
+     * 状态库自检：只读，不修改数据。用来在归档、迁移或异常重启前后确认库仍然自洽。
+     *
+     * <p>检查项覆盖：SQLite 完整性、schema 版本、外键、孤儿对话/调用、状态列与数据不一致、
+     * 追加表序号缺口、悬空的子任务引用、以及已准备任务缺失副本目录。
+     */
+    public Verification verify() {
+        List<Check> checks = new ArrayList<>();
+        String integrity = scalar("PRAGMA integrity_check");
+        checks.add(new Check("sqlite_integrity", "ok".equalsIgnoreCase(integrity.strip()), integrity));
+        int version = userVersion();
+        checks.add(new Check("schema_version", version == SCHEMA_VERSION, "当前 " + version + "，期望 " + SCHEMA_VERSION));
+        long foreignKeys = count("SELECT count(*) FROM pragma_foreign_key_check");
+        checks.add(new Check("foreign_keys", foreignKeys == 0, "违反外键的记录 " + foreignKeys + " 条"));
+        long orphanMessages = count("SELECT count(*) FROM task_messages WHERE task_id NOT IN (SELECT id FROM tasks)");
+        checks.add(new Check("orphan_messages", orphanMessages == 0, "孤儿对话记录 " + orphanMessages + " 条"));
+        long orphanCalls = count("SELECT count(*) FROM task_calls WHERE task_id NOT IN (SELECT id FROM tasks)");
+        checks.add(new Check("orphan_calls", orphanCalls == 0, "孤儿工具调用 " + orphanCalls + " 条"));
+        long mismatch = count("SELECT count(*) FROM tasks WHERE status IS NULL OR status <> json_extract(data,'$.status')");
+        checks.add(new Check("status_column", mismatch == 0, "状态列与任务数据不一致 " + mismatch + " 条"));
+        long messageGaps = count(
+                "SELECT count(*) FROM (SELECT task_id FROM task_messages GROUP BY task_id HAVING max(seq)+1 <> count(*))");
+        checks.add(new Check("message_sequence", messageGaps == 0, "对话序号有缺口或重复的任务 " + messageGaps + " 个"));
+        long callGaps = count(
+                "SELECT count(*) FROM (SELECT task_id FROM task_calls GROUP BY task_id HAVING max(seq)+1 <> count(*))");
+        checks.add(new Check("call_sequence", callGaps == 0, "工具调用序号有缺口或重复的任务 " + callGaps + " 个"));
+
+        List<Task> tasks = list();
+        Set<String> ids = new HashSet<>();
+        for (Task task : tasks) ids.add(task.id);
+        int dangling = 0;
+        for (Task task : tasks) for (String child : task.children.values()) if (!ids.contains(child)) dangling++;
+        checks.add(new Check("dangling_children", dangling == 0, "指向不存在任务的子任务引用 " + dangling + " 个"));
+        int missing = 0;
+        for (Task task : tasks) {
+            if (!task.workspaceReady || task.workspace == null || task.workspace.isBlank()) continue;
+            if (!Files.isDirectory(Path.of(task.workspace))) missing++;
+        }
+        checks.add(new Check("workspace_present", missing == 0, "副本目录缺失的已准备任务 " + missing + " 个"));
+
+        return new Verification(List.copyOf(checks), checks.stream().allMatch(Check::ok));
+    }
+
+    private String scalar(String sql) {
+        try (Statement s = db().createStatement(); ResultSet r = s.executeQuery(sql)) {
+            return r.next() ? Objects.toString(r.getString(1), "") : "";
+        } catch (SQLException e) { throw new IllegalStateException(e); }
+    }
+
+    private long count(String sql) {
+        try { return Long.parseLong(scalar(sql).strip()); }
+        catch (NumberFormatException e) { throw new IllegalStateException("计数查询结果无效: " + sql); }
+    }
+
     // ------------------------------------------------------------------ audit
 
     public record Event(long seq, String taskId, String kind, String at, String data) {}

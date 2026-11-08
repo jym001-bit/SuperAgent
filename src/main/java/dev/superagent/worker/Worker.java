@@ -160,6 +160,20 @@ public final class Worker {
                         ? "run_test "+Json.text(args)
                         : FileTools.required(args,"command");
                 if(call.phase==Task.Phase.PENDING) {
+                    // 只读白名单默认关闭；开启时也照样写入审批记录与审计事件，只是不需要人点。
+                    CommandPolicy.Decision policy = call.name.equals("execute_command")
+                            ? CommandPolicy.classify(command)
+                            : CommandPolicy.Decision.manual("run_test 执行仓库构建脚本，一律人工审批");
+                    if(policy.autoApprove()) {
+                        Task.Approval approval=new Task.Approval(call.id,command,task.workspace);
+                        approval.decision="AUTO_APPROVED";
+                        update(task.id,"approval_auto_approved",t->{
+                            t.approvals.add(approval);Task.Call c=find(t,call.id);c.phase=Task.Phase.WAITING_APPROVAL;c.approvalId=approval.id;
+                            t.status=Task.Status.QUEUED;t.progress="只读命令自动批准: "+policy.reason();
+                        });
+                        notice.accept(task.id+" 只读命令自动批准（"+policy.reason()+"）: "+command);
+                        return;
+                    }
                     Task.Approval approval=new Task.Approval(call.id,command,task.workspace);
                     update(task.id,"approval_requested",t->{
                         t.approvals.add(approval);Task.Call c=find(t,call.id);c.phase=Task.Phase.WAITING_APPROVAL;c.approvalId=approval.id;
@@ -169,13 +183,14 @@ public final class Worker {
                 }
                 Task.Approval approval=task.approvals.stream().filter(a->a.id.equals(call.approvalId)).findFirst().orElseThrow();
                 if(approval.decision.equals("DENIED")) { complete(task.id,call.id,"用户拒绝执行该命令，请换方法或询问用户。");return; }
-                if(!approval.decision.equals("APPROVED")||!approval.command.equals(command)||!approval.cwd.equals(task.workspace))
+                if(!Set.of("APPROVED","AUTO_APPROVED").contains(approval.decision)||!approval.command.equals(command)||!approval.cwd.equals(task.workspace))
                     throw new IllegalStateException("审批已失效，需要重新申请");
                 if(call.name.equals("run_test")) {
                     Path log=config.stateDir().resolve("logs").resolve(task.id).resolve("test-"+UUID.randomUUID()+".log");
                     update(task.id,"test_started",t->{
                         Task.Call c=find(t,call.id);c.phase=Task.Phase.EXECUTING;c.logPath=log.toString();
-                        t.approvals.stream().filter(a->a.id.equals(call.approvalId)).findFirst().orElseThrow().decision="USED";
+                        t.approvals.stream().filter(a->a.id.equals(call.approvalId)).findFirst().orElseThrow()
+                                .decision=approval.decision.equals("AUTO_APPROVED")?"USED_AUTO":"USED";
                         t.progress="测试命令执行中";
                     });
                     String output=ToolRegistry.execute(call.name,args,Path.of(task.workspace));
@@ -189,7 +204,8 @@ public final class Worker {
                 Path log=config.stateDir().resolve("logs").resolve(task.id).resolve("command-"+UUID.randomUUID()+".log");
                 update(task.id,"command_started",t->{
                     Task.Call c=find(t,call.id);c.phase=Task.Phase.EXECUTING;c.logPath=log.toString();
-                    t.approvals.stream().filter(a->a.id.equals(call.approvalId)).findFirst().orElseThrow().decision="USED";
+                    t.approvals.stream().filter(a->a.id.equals(call.approvalId)).findFirst().orElseThrow()
+                            .decision=approval.decision.equals("AUTO_APPROVED")?"USED_AUTO":"USED";
                     t.progress="命令执行中";
                 });
                 Processes.Result result=commands.run(command,Path.of(task.workspace),log,config.commandTimeout(),p->processStarted.accept(task.id,p));
