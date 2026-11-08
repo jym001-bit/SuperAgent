@@ -123,6 +123,10 @@ public record EvalReport(String mode, String model, String startedAt, String fin
                     .append(" |\n");
         }
         List<EvalTaskResult> failedTasks = tasks.stream().filter(task -> !task.success()).toList();
+        text.append("\n## 证据目录\n\n");
+        text.append("| 任务 | 证据目录（source / state / evidence 均已保留） |\n|---|---|\n");
+        for (EvalTaskResult task : tasks)
+            text.append("| `").append(task.id()).append("` | `").append(escape(task.artifactsDir())).append("` |\n");
         if (!failedTasks.isEmpty()) {
             text.append("\n## 判据失败明细\n");
             for (EvalTaskResult task : failedTasks) {
