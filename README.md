@@ -186,4 +186,4 @@ java -jar .\target\superagent-java.jar --help
 
 `mvn test` 需要完整的进程与命名管道能力：受限沙箱里 `git clone` 会失败并表现为大量超时假失败，这类环境请放宽沙箱或在 Linux 上跑（CI 即如此）。
 
-进一步阅读：[架构与代码阅读顺序](docs/architecture.md)、[企业级演进路线图](docs/roadmap.md)、[运维手册：指标、审计与归档](docs/operations.md)、[从演示到真实模型的验收步骤](docs/walkthrough.md)、[首版验收记录](docs/validation.md)。
+进一步阅读：[一页成果结论](docs/results.md)、[架构与代码阅读顺序](docs/architecture.md)、[企业级演进路线图](docs/roadmap.md)、[运维手册：指标、审计与归档](docs/operations.md)、[从演示到真实模型的验收步骤](docs/walkthrough.md)、[验收记录](docs/validation.md)。
