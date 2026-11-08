@@ -108,6 +108,8 @@ java -jar .\target\superagent-java.jar --repo D:\你的Git项目
 
 工具面统一注册在 `ToolRegistry`，每个工具有风险等级。另有只读的 `git_status`、`git_diff`、`git_log`：直接用 argv 调用 git、不经 shell，path 只作为 pathspec 传入，只在任务副本内可用。`run_test` 自动识别 Maven / Gradle / npm / pytest / Cargo / Go，把输出解析成「退出码 + 失败用例 + 结论摘要」再回填上下文；它执行的是仓库里的构建脚本，所以和 `execute_command` 一样**每次都要审批**，不会因为「只是测试」而放行。
 
+**改动范围闸门**：需求指不出要改哪个文件、类或方法时（例如只说「优化一下性能」），`write_file`/`edit_file` 会被直接拒绝，并在验证记录里留一条拦截，模型必须先用 `ask_user` 问清目标；用户补充明确目标后闸门自动打开。计划子任务以人工批准的计划节点为准。这是执行层的机械策略，不依赖模型自觉——实测提示词管不住模型用「项目里只有一处可优化」来推断范围。`SUPERAGENT_SCOPE_EXPLORATORY=1` 可切到探索模式。
+
 `execute_command` 在任务根目录运行，每次执行都要审批。Windows 使用不加载配置的 PowerShell，其他系统使用 `/bin/sh`。命令子进程只继承开发运行必需的环境变量，不自动继承模型 Key；默认 120 秒超时。需要项目专用秘密或特殊环境的命令，应由用户自行运行。
 
 **目录检查和审批不是操作系统沙箱。** 批准的 Shell 命令仍具有当前系统账号的权限，可以访问任务目录之外、联网或启动其他程序；应按终端展示的完整命令进行判断。取消会尝试终止所启动的进程树；系统级脱离或另行注册的服务不在本地进程管理保证范围内。
@@ -164,6 +166,7 @@ git apply '完整路径\changes.patch'
 | `SUPERAGENT_COMMAND_TIMEOUT_SECONDS` | `120` |
 | `SUPERAGENT_HTTP_TIMEOUT_SECONDS` | `120` |
 | `SUPERAGENT_MODEL_RETRIES` | `2`，模型调用重试次数（仅连接失败、连接超时、429/503），上限 5 |
+| `SUPERAGENT_SCOPE_EXPLORATORY` | 关闭；设为 `1` 允许「需求没指明改哪里」时也直接动手（本地探索用） |
 
 同一个状态目录只能启动一个实例。它可以保存多个目标仓库的任务，每个任务保留自己的来源。日志、对话和代码副本持续保留，首版不自动清理，不自动压缩上下文。
 

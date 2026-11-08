@@ -15,6 +15,11 @@ import static org.junit.jupiter.api.Assertions.*;
 class RuntimeTest {
     @TempDir Path temporary;
 
+    // 这些用例用 "A"/"B" 之类极短提示词当夹具，验证调度与预算，不验证范围策略；
+    // 范围闸门本身由 ScopeGateTest 覆盖。所以这里显式切到探索模式。
+    @BeforeEach void allowTerseFixturePrompts(){System.setProperty(ScopeGate.EXPLORATORY_PROPERTY,"true");}
+    @AfterEach void restoreScopePolicy(){System.clearProperty(ScopeGate.EXPLORATORY_PROPERTY);}
+
     @Test void twoWorkersCanHaveModelRequestsInFlightAtTheSameTime()throws Exception {
         Path repo=repo(temporary);Config c=config(temporary.resolve("state"));
         CountDownLatch bothEntered=new CountDownLatch(2),release=new CountDownLatch(1);

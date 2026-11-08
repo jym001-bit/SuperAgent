@@ -219,6 +219,18 @@ public final class Worker {
             FileTools files=new FileTools(Path.of(task.workspace));
             String expectedPath=null,expectedContent=null;
             if(call.name.equals("write_file")||call.name.equals("edit_file")) {
+                // 机械闸门：需求指不出改哪里时，不允许落笔。提示词管不住的推断，由执行层兜住。
+                // 计划子任务例外：整个计划已由人工批准，范围以该节点的目标为准。
+                ScopeGate.Decision scope=task.parentId!=null
+                        ? new ScopeGate.Decision(true,"计划已获人工批准，范围以计划节点为准")
+                        : ScopeGate.check(requestText(task));
+                if(ScopeGate.strict()&&!scope.allowed()) {
+                    update(task.id,"scope_blocked",t->t.validations.add("范围闸门拦截: "+scope.reason()));
+                    complete(task.id,call.id,"写入被拒绝（改动范围未确认）："+scope.reason()
+                            +"。请先用 ask_user 询问用户要改哪个文件、类或方法，以及用什么命令或检查验收；"
+                            +"在得到明确目标之前不要重试这次写入。");
+                    return;
+                }
                 expectedPath=FileTools.required(args,"path");
                 Path target=files.resolve(expectedPath);
                 if(call.name.equals("write_file"))expectedContent=FileTools.required(args,"content");
@@ -261,6 +273,12 @@ public final class Worker {
         });
     }
     public static Task.Call find(Task t,String id) {return t.tools.stream().filter(c->c.id.equals(id)&&!c.appended).findFirst().orElseThrow();}
+    /** 需求原文 + 用户全部补充：闸门看的是「到此刻为止用户说过的所有话」。 */
+    private static String requestText(Task task) {
+        StringBuilder text=new StringBuilder(task.prompt==null?"":task.prompt);
+        for(Task.Input input:task.inputs) if(input.text!=null) text.append('\n').append(input.text);
+        return text.toString();
+    }
     private static String digest(String output) {
         for (String line : output.split("\n")) if (!line.isBlank()) return line.strip();
         return "run_test => 无输出";
