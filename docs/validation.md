@@ -2,7 +2,7 @@
 
 ## 2026-11-08 企业级执行内核
 
-`mvn package` 通过 **93 个测试**（上一阶段 33 个），0 失败、0 错误、0 跳过，生成 `target/superagent-java.jar`。
+`mvn package` 通过 **95 个测试**（上一阶段 33 个），0 失败、0 错误、0 跳过，生成 `target/superagent-java.jar`。
 
 这一阶段改的是内核，不是界面：存储从「整块 JSON 每次重写」变成「骨架 + 追加表」，调度从 30 毫秒全表轮询变成显式唤醒，模型请求开始受上下文预算约束，工具面收敛到统一注册表，并补齐了指标、审计、归档与评测。
 
@@ -22,7 +22,22 @@
 
 ### 环境注意
 
-`mvn test` 需要完整的进程与命名管道能力。在受限沙箱里 `git clone` 会以 `sh.exe: couldn't create signal pipe, Win32 error 5` 失败，表现为大量「15 秒未达条件」的假失败；放宽沙箱后同一份代码 93 个测试全绿。因此 CI 只在 `ubuntu-latest` 上跑（见 [CI 门禁](ci.md)）。
+`mvn test` 需要完整的进程与命名管道能力。在受限沙箱里 `git clone` 会以 `sh.exe: couldn't create signal pipe, Win32 error 5` 失败，表现为大量「15 秒未达条件」的假失败；放宽沙箱后同一份代码 95 个测试全绿。因此 CI 只在 `ubuntu-latest` 上跑（见 [CI 门禁](ci.md)）。
+
+### 真实 CI 首次运行（2026-11-08）
+
+仓库推送到 GitHub（`jym001-bit/SuperAgent`，public）后，`ci.yml` 在 ubuntu-latest 的 JDK 17 与 21 双矩阵上各跑了一次：**93 个用例中 92 个通过、1 个失败**，两次运行结论一致；Linux 上整套只要约 40 秒（Windows 约 110 秒）。
+
+失败的是 `RecoveryTest.queuedWorkAndHumanQuestionsSurviveRestart`，但**不是测试环境的锅**：把断言从「15 秒未达条件」改成打印任务真实状态后，一眼看到根因——
+
+```
+当前=FAILED, 调用次数=0
+错误=Git 操作失败: fatal: not a git repository ...: .git
+```
+
+`calls=0` 说明它连第一次模型调用都没到，卡在准备副本阶段。真实缺陷是：关闭进程会打断 `git clone`，留下「目录存在但解析不出 HEAD」的半成品；恢复时在该目录里跑 git 必然失败，任务被判 `FAILED`，`/resume` 也救不回来。Windows 上因为慢，恰好没在这个窗口里关闭进程。
+
+修复：`Workspaces.prepare` 区分「解析不出 HEAD」（准备从未完成、不可能有成果 → 重建并记录进度）与「有效仓库」（可能含成果 → 保留并核对基线）。同时把测试断言从「超时」改成可读状态。新增 `WorkspaceRecoveryTest` 两条用例（半成品被重建、基线漂移的副本被保留并报错）。修复后的 CI 复验结论见 [CI 门禁](ci.md)。
 
 ### 这一阶段仍未验证
 

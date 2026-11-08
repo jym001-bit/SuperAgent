@@ -41,8 +41,9 @@ public final class Worker {
             Task task=store.get(id);
             if(task.status!=Task.Status.RUNNING) return;
             if(!task.workspaceReady) {
-                workspaces.prepare(task);
-                update(id,"workspace_prepared",t->{ t.workspaceReady=true; t.progress="任务副本已准备"; });
+                boolean recreated=workspaces.prepare(task);
+                update(id,"workspace_prepared",t->{ t.workspaceReady=true;
+                    t.progress=recreated?"任务副本已重建（上次准备被中断）":"任务副本已准备"; });
                 task=store.get(id);
             }
             Task.Call pending=task.outstanding();

@@ -14,7 +14,11 @@ public final class Workspaces {
         Path repo=path.toRealPath();
         String root=git(repo,"rev-parse","--show-toplevel").strip();
         if(!Path.of(root).toRealPath().equals(repo)) throw new IllegalArgumentException("--repo 必须是 Git 仓库根目录");
-        String commit=git(repo,"rev-parse","--verify","HEAD").strip();
+        String commit;
+        try { commit=git(repo,"rev-parse","--verify","HEAD").strip(); }
+        catch(IllegalArgumentException error) {
+            throw new IllegalArgumentException("目标项目需至少一次提交: "+error.getMessage());
+        }
         return new Source(repo,commit,!git(repo,"status","--porcelain").isBlank());
     }
     public Path path(String id) { return state.resolve("work").resolve(id); }
@@ -31,9 +35,26 @@ public final class Workspaces {
         if (!git(source.repo, "symbolic-ref", "--short", "HEAD").strip().equals(branch))
             throw new IllegalArgumentException("工作仓库须检出配置的 GitHub 基线分支");
     }
-    public void prepare(Task task) throws Exception {
+    /**
+     * 准备任务副本。
+     *
+     * <p>调用方只有在该任务 {@code workspaceReady=false} 时才会进来，所以目录里不可能有已完成的成果。
+     * 因此区分两种「目录已存在」：
+     * <ul>
+     *   <li>不是有效 Git 仓库 —— 说明上次准备被打断（关闭进程会中断 {@code git clone}），直接重建；</li>
+     *   <li>是有效仓库 —— 可能是被中断的克隆也可能是真在用的副本，一律保留并核对基线与分支。</li>
+     * </ul>
+     *
+     * @return {@code true} 表示重建了从未完成准备的副本
+     */
+    public boolean prepare(Task task) throws Exception {
         Path workspace=Path.of(task.workspace);
         Files.createDirectories(workspace.getParent());
+        boolean recreated=false;
+        if(Files.exists(workspace) && !isRepository(workspace)) {
+            deleteTree(workspace);
+            recreated=true;
+        }
         if(!Files.exists(workspace)) {
             git(workspace.getParent(),"clone","--no-hardlinks","--no-local","--no-checkout","--",task.repo,workspace.toString());
             git(workspace,"checkout","-b","agent/"+task.id,task.baseCommit);
@@ -43,6 +64,37 @@ public final class Workspaces {
                 throw new IllegalStateException("任务副本基线不符，请检查目录: "+workspace);
             String branch=git(workspace,"branch","--show-current").strip();
             if(!branch.equals("agent/"+task.id)) git(workspace,"checkout","-b","agent/"+task.id,task.baseCommit);
+        }
+        return recreated;
+    }
+
+    /**
+     * 能解析出 HEAD 才算「可用仓库」：被打断的克隆可能留下一个 .git 目录，但解析不出提交，
+     * 这种目录不能当副本用。失败不抛异常——它的用途就是决定要不要重建。
+     */
+    private boolean isRepository(Path directory) {
+        try {
+            List<String> argv=gitPrefix();
+            argv.addAll(List.of("rev-parse","--verify","HEAD"));
+            Processes.Result result=Processes.run(argv,directory,
+                    state.resolve("logs").resolve("git-"+UUID.randomUUID()+".log"),Duration.ofSeconds(15),process->{},gitEnvironment());
+            return !result.timedOut() && result.exitCode()==0;
+        } catch(Exception error) {
+            return false;
+        }
+    }
+
+    /** 递归删除。Windows 上 git 的对象文件是只读的，需要先去掉只读位才能删。 */
+    private static void deleteTree(Path root) throws Exception {
+        if(!Files.exists(root,LinkOption.NOFOLLOW_LINKS)) return;
+        try(var paths=Files.walk(root)) {
+            for(Path path:paths.sorted(Comparator.reverseOrder()).toList()) {
+                try { Files.deleteIfExists(path); }
+                catch(java.nio.file.AccessDeniedException denied) {
+                    if(!path.toFile().setWritable(true)) throw denied;
+                    Files.deleteIfExists(path);
+                }
+            }
         }
     }
     public record Delivery(String files,Path patch,List<String> validations) {}
@@ -191,7 +243,11 @@ public final class Workspaces {
         List<String> argv=gitPrefix();
         argv.addAll(List.of(args));
         Processes.Result r=Processes.run(argv,cwd,state.resolve("logs").resolve("git-"+UUID.randomUUID()+".log"),timeout,p->{},gitEnvironment());
-        if(r.timedOut()||r.exitCode()!=0) throw new IllegalArgumentException("Git 操作失败（目标项目需至少一次提交）: "+r.output());
+        // 错误信息必须指出是哪条命令、哪个目录失败；不要把所有 git 失败都归结为「需要提交」。
+        if(r.timedOut()) throw new IllegalStateException("Git 命令超时（"+timeout.toSeconds()+" 秒）: git "
+                +String.join(" ",args)+"（目录: "+cwd+"）");
+        if(r.exitCode()!=0) throw new IllegalArgumentException("Git 操作失败: "+r.output().strip()
+                +"（命令: git "+String.join(" ",args)+"，目录: "+cwd+"）");
         return r.output();
     }
     private static List<String> gitPrefix() {

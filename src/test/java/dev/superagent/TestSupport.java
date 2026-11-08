@@ -26,6 +26,13 @@ public final class TestSupport {
         var result=Processes.run(argv,cwd,cwd.getParent().resolve(UUID.randomUUID()+".log"),Duration.ofSeconds(15),p->{});
         assertEquals(0,result.exitCode(),result.output());
     }
+    /** 需要读取命令输出时用这个（git 成功但要看 stdout）。 */
+    public static String gitOutput(Path cwd,String... args)throws Exception {
+        List<String> argv=new ArrayList<>(List.of("git","-c","core.hooksPath="));argv.addAll(List.of(args));
+        var result=Processes.run(argv,cwd,cwd.getParent().resolve(UUID.randomUUID()+".log"),Duration.ofSeconds(15),p->{});
+        assertEquals(0,result.exitCode(),result.output());
+        return result.output();
+    }
     public static void await(BooleanSupplier condition)throws Exception {
         long end=System.nanoTime()+Duration.ofSeconds(15).toNanos();
         while(!condition.getAsBoolean()&&System.nanoTime()<end)Thread.sleep(20);
