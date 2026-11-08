@@ -1,0 +1,80 @@
+# Super-agent Java 持续集成门禁。
+#
+# 只跑 ubuntu-latest：本项目测试会创建临时 Git 仓库、启动本地 HTTP 服务，
+# 并用子 JVM 做崩溃恢复；这些用例依赖 Linux 的 git 与进程语义（见 docs/ci.md）。
+# 仓库固定为离线测试：不调用真实模型、不启动 Docker、不访问外网。
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支/PR 的新提交取消上一轮仍在跑的 CI，避免排队和重复占用 runner。
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# 最小权限：CI 只需要读仓库内容。
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify (JDK ${{ matrix.java }})
+    runs-on: ubuntu-latest
+    # 25 分钟足够双版本矩阵各跑一次全量测试；超时会暴露挂死的子进程或网络等待。
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        # 编译目标是 release 17，同时在最新 LTS 21 上验证向上升级路径。
+        java: [17, 21]
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 JDK ${{ matrix.java }}（temurin）并启用 Maven 缓存
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: maven
+
+      # 测试会 git init/git commit 临时仓库，没有全局身份会直接失败。
+      # init.defaultBranch=main 让临时仓库的默认分支可预期（避免 master/main 差异）。
+      - name: 配置 Git（临时测试仓库提交需要）
+        run: |
+          set -euo pipefail
+          git --version
+          git config --global user.name "superagent-ci"
+          git config --global user.email "superagent-ci@users.noreply.github.com"
+          git config --global init.defaultBranch main
+          git config --global advice.detachedHead false
+
+      # verify 覆盖 compile + test + shade package，产物即 target/superagent-java.jar。
+      - name: 编译、运行全部离线测试并打包
+        run: mvn -B -ntp verify
+
+      # 冒烟检查：确认 fat jar 的 Main-Class 与 --serve-local 入口真实可用，
+      # 避免“测试通过但产物打不开”这类交付问题。
+      - name: 打包产物冒烟检查
+        run: |
+          set -euo pipefail
+          test -f target/superagent-java.jar
+          java -jar target/superagent-java.jar --help | tee /tmp/superagent-help.txt
+          grep -q -- '--serve-local' /tmp/superagent-help.txt
+
+      - name: 备份脚本语法检查
+        run: bash -n deploy/backup.sh
+
+      # 只在失败时上传，节省存储；保留 7 天足够定位一次失败。
+      - name: 上传 Surefire 报告（仅失败时）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports-jdk${{ matrix.java }}
+          path: target/surefire-reports
+          if-no-files-found: ignore
+          retention-days: 7

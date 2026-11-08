@@ -22,6 +22,9 @@ public class Task {
     public String result = "", error = "", progress = "排队", question = "";
     public int calls;
     public long tokens;
+    /** 上下文治理：折叠次数与最近一次请求的 token 估算，供成本视图与诊断使用。 */
+    public int contextTrims;
+    public long contextTokens;
     public boolean workspaceReady;
     public List<ObjectNode> messages = new ArrayList<>();
     public List<Input> inputs = new ArrayList<>();

@@ -1,18 +1,97 @@
 [Unit]
 Description=Super-agent GitHub service
+# 用户级单元：安装到 ~/.config/systemd/user/ 后用 systemctl --user 管理。
+# 注意：下面 [Service] 的沙箱项依赖 systemd >= 247 的用户单元命名空间能力。
+# 部署后务必用 `systemctl --user show superagent.service -p ProtectSystem -p ProtectHome`
+# 确认是否真的生效；若显示为空，说明该发行版不支持在用户单元启用文件系统保护，
+# 应改为系统级单元（去掉 %h、改用专用系统账号），不要放着“看起来加固、实际未生效”。
 Requires=docker.service
-After=docker.service
+After=docker.service network-online.target
+# 保留原有 Docker 依赖语义。rootless Docker 的单元名因发行版不同（可能是 user 级的
+# docker.service，也可能是系统单元 docker.service）；若 systemctl --user 找不到该单元，
+# 服务会因 Requires 无法激活而启动失败，此时应删除 Requires= 只保留 After=，
+# 由部署方的 rootless Docker 配置保证守护进程先就绪。
+# 连续失败 5 次（300 秒窗口内）后停止重试，避免配置错误时无限重启刷日志。
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
 WorkingDirectory=%h/superagent
 EnvironmentFile=%h/.config/superagent/service.env
-ExecStart=/usr/bin/java -jar %h/superagent/superagent-java.jar --serve --repo %h/superagent/source
+# 保留原有启动命令与参数；追加容器内一致的内存策略：
+#   MaxRAMPercentage 按可见内存的 75% 取堆，ExitOnOutOfMemoryError 让 OOM 立即退出由
+#   systemd 重启，而不是让进程带着坏状态半死运行。
+ExecStart=/usr/bin/java -XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError -jar %h/superagent/superagent-java.jar --serve --repo %h/superagent/source
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=45s
 UMask=0077
+
+# ---- 权限收窄 -------------------------------------------------------------
+# 任何 setuid/setgid 位都不产生提权效果；应用与 git/docker 子进程都不需要提权。
 NoNewPrivileges=yes
+# 非 root 用户单元本身没有 capability，显式清空以防从父级继承。
+CapabilityBoundingSet=
+AmbientCapabilities=
+# 私有 /tmp：应用自己不会写 /tmp，但 sqlite-jdbc 会把原生库解压到 java.io.tmpdir 并 dlopen。
+# systemd 的私有 /tmp 是可写的 tmpfs（未挂 noexec），因此不影响 SQLite 加载；
+# 若改成 ReadOnlyPaths=/tmp 会直接让状态库初始化失败。
+PrivateTmp=yes
+
+# ---- 文件系统保护 ---------------------------------------------------------
+# strict：除 /dev、/proc、/sys 外整个文件系统只读；下面用 ReadWritePaths 精确放行。
+ProtectSystem=strict
+# 家目录只读后，再对状态目录和目标仓库单独开写。
+# 注意：ReadWritePaths 必须与 service.env 里的 SUPERAGENT_STATE_DIR 完全一致，
+# 否则服务启动时创建 state.db 会得到 EROFS。
+ProtectHome=read-only
+# 状态目录：SQLite、任务副本、交付物、日志（必须可写）。
+# source：应用只读基线（git 前缀带 --no-optional-locks，不会刷新源仓库索引），
+# 但部署方需要在部署账号下定期快进同步该仓库，所以这里保留写权限；
+# 若想更严格，可改成 ReadOnlyPaths=%h/superagent/source，并让同步在服务停止时执行。
+ReadWritePaths=%h/superagent/state %h/superagent/source
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+# 常规架构切换不需要：JVM、git、docker CLI 都不会调用 personality(2)。
+LockPersonality=yes
+# 应用不需要实时调度优先级；需要时再按容量评估放开，而不是默认允许。
+RestrictRealtime=yes
+
+# 唯一需要放宽的“经典矛盾项”：JIT。
+# 不设置 MemoryDenyWriteExecute=yes —— HotSpot 需要同时可写可执行的内存页，
+# 开启后 JVM 会在启动阶段直接失败。常见加固模板里这两项同时出现是本末倒置，
+# 这里明确只保留真正可用的项。
+
+# ---- 网络与命名空间 -------------------------------------------------------
+# 服务监听本机 HTTP，git 走 HTTPS，docker CLI 走 Unix socket，三者只需这三类地址族。
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# 语义：拒绝创建任何新命名空间。docker CLI 只是通过 /run/user/<uid>/docker.sock 连接
+# 已在别处运行的 rootless dockerd，自己不调用 unshare/clone(CLONE_NEW*)；
+# 沙箱容器由 dockerd 在自己的单元里创建，其命名空间不受本单元限制。
+# 只有当 rootless dockerd 与本服务放在同一单元时（需要 CLONE_NEWUSER），
+# 才改成 RestrictNamespaces=~user，并在此写明原因。
+RestrictNamespaces=yes
+
+# ---- 资源与系统调用 -------------------------------------------------------
+# 需要 cgroup v2 与用户委派（部署条件已要求，rootless Docker 同样依赖它）。
+# 2G 上限配合 MaxRAMPercentage=75 约得 1.5G 堆；调大时同步核对 JVM 堆和宿主机内存。
+MemoryMax=2G
+# 线程 + git/docker 子进程总数上限：SUPERAGENT_WORKERS 个 Worker 再加子进程远低于此值，
+# 同时防止失控的进程树拖垮宿主机。
+TasksMax=512
+# @system-service 覆盖 JVM、git、docker CLI 需要的进程创建/网络/文件系统调用，
+# 同时排除 @privileged、@mount、@raw-io、@reboot 等提权面。
+# 若某发行版的 JVM 因 EPERM 启动失败，按日志里的 syscall 名追加（例如
+# SystemCallFilter=@system-service @pkey），不要整体降级成 ~@privileged。
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=default.target

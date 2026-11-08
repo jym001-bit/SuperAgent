@@ -25,6 +25,7 @@ final class AgentServer implements AutoCloseable {
     private final Router router;
     private final String operatorToken;
     private final HttpServer server;
+    private final long startedAt = System.currentTimeMillis();
     private final java.util.concurrent.atomic.AtomicBoolean closed = new java.util.concurrent.atomic.AtomicBoolean();
     private final ExecutorService requests = new ThreadPoolExecutor(8, 8, 0, TimeUnit.MILLISECONDS,
             new ArrayBlockingQueue<>(64), new ThreadPoolExecutor.AbortPolicy());
@@ -63,6 +64,10 @@ final class AgentServer implements AutoCloseable {
                 } else if (method.equals("GET") && path.equals("/readyz")) {
                     store.counts();
                     send(exchange, 200, Map.of("status", "ready"));
+                } else if (method.equals("GET") && path.equals("/metrics")) {
+                    // 只监听回环地址；部署方可由反向代理决定是否对外暴露。
+                    respond(exchange, 200, "text/plain; version=0.0.4; charset=utf-8",
+                            Metrics.render(store, startedAt).getBytes(StandardCharsets.UTF_8));
                 } else if (config != null && path.equals("/webhooks/github")) {
                     if (!method.equals("POST")) throw new ApiError(405, "需要 POST");
                     webhook(exchange);
@@ -141,6 +146,23 @@ final class AgentServer implements AutoCloseable {
         }
         if (method.equals("GET") && path.equals("/v1/status")) {
             send(exchange, 200, Map.of("tasks", store.counts()));
+            return;
+        }
+        if (method.equals("GET") && path.equals("/v1/audit")) {
+            Map<String, String> query = query(exchange);
+            long after = number(query.get("after"), 0);
+            int limit = (int) Math.min(number(query.get("limit"), 100), 500);
+            send(exchange, 200, store.events(query.get("taskId"), query.get("kind"), after, limit)
+                    .stream().map(AgentServer::event).toList());
+            return;
+        }
+        if (method.equals("GET") && path.equals("/v1/costs")) {
+            Map<String, Object> costs = new java.util.LinkedHashMap<>();
+            costs.put("tokens", store.totalTokens());
+            costs.put("modelCalls", store.totalModelCalls());
+            costs.put("tasks", store.counts());
+            costs.put("events", store.eventCounts());
+            send(exchange, 200, costs);
             return;
         }
         if (method.equals("GET") && path.equals("/v1/approvals")) {
@@ -223,6 +245,37 @@ final class AgentServer implements AutoCloseable {
             }
             default -> throw new ApiError(400, "mode 必须是 single、plan 或 auto");
         }
+    }
+
+    private static Map<String, Object> event(Store.Event event) {
+        Map<String, Object> value = new java.util.LinkedHashMap<>();
+        value.put("seq", event.seq());
+        value.put("taskId", event.taskId());
+        value.put("kind", event.kind());
+        value.put("at", event.at());
+        value.put("data", event.data());
+        return value;
+    }
+
+    private static Map<String, String> query(HttpExchange exchange) {
+        Map<String, String> values = new java.util.LinkedHashMap<>();
+        String raw = exchange.getRequestURI().getRawQuery();
+        if (raw == null || raw.isBlank()) return values;
+        for (String part : raw.split("&")) {
+            if (part.isBlank()) continue;
+            int equals = part.indexOf('=');
+            String key = equals < 0 ? part : part.substring(0, equals);
+            String value = equals < 0 ? "" : part.substring(equals + 1);
+            values.put(java.net.URLDecoder.decode(key, StandardCharsets.UTF_8),
+                    java.net.URLDecoder.decode(value, StandardCharsets.UTF_8));
+        }
+        return values;
+    }
+
+    private static long number(String value, long fallback) {
+        if (value == null || value.isBlank()) return fallback;
+        try { return Math.max(0, Long.parseLong(value.strip())); }
+        catch (NumberFormatException e) { throw new ApiError(400, "分页参数必须是数字"); }
     }
 
     private static String hash(HttpExchange exchange) throws IOException {

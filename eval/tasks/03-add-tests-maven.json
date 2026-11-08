@@ -1,0 +1,79 @@
+{
+  "id": "add-tests-maven",
+  "name": "新增测试并让 mvn -o test 通过",
+  "prompt": "为 src/main/java/demo/Calculator.java 新增一个 JUnit 5 测试（放在 src/test/java/demo/CalculatorTest.java），覆盖 add 方法并让 mvn -o -B -q test 通过。不要修改 Calculator.java。",
+  "setup": {
+    "files": {
+      "pom.xml": [
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+        "<project xmlns=\"http://maven.apache.org/POM/4.0.0\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd\">",
+        "  <modelVersion>4.0.0</modelVersion>",
+        "  <groupId>demo</groupId>",
+        "  <artifactId>eval-sample</artifactId>",
+        "  <version>1.0.0</version>",
+        "  <properties>",
+        "    <maven.compiler.release>17</maven.compiler.release>",
+        "    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>",
+        "  </properties>",
+        "  <dependencies>",
+        "    <dependency>",
+        "      <groupId>org.junit.jupiter</groupId>",
+        "      <artifactId>junit-jupiter</artifactId>",
+        "      <version>5.12.1</version>",
+        "      <scope>test</scope>",
+        "    </dependency>",
+        "  </dependencies>",
+        "  <build>",
+        "    <plugins>",
+        "      <plugin>",
+        "        <groupId>org.apache.maven.plugins</groupId>",
+        "        <artifactId>maven-compiler-plugin</artifactId>",
+        "        <version>3.14.0</version>",
+        "      </plugin>",
+        "      <plugin>",
+        "        <groupId>org.apache.maven.plugins</groupId>",
+        "        <artifactId>maven-surefire-plugin</artifactId>",
+        "        <version>3.5.2</version>",
+        "      </plugin>",
+        "    </plugins>",
+        "  </build>",
+        "</project>",
+        ""
+      ],
+      "src/main/java/demo/Calculator.java": [
+        "package demo;",
+        "",
+        "public final class Calculator {",
+        "    public int add(int left, int right) {",
+        "        return left + right;",
+        "    }",
+        "}",
+        ""
+      ]
+    }
+  },
+  "checks": [
+    { "op": "command", "command": "mvn -o -B -q test", "exitCode": 0, "timeoutSeconds": 300 },
+    { "op": "file_contains", "path": "src/test/java/demo/CalculatorTest.java", "text": "@Test" },
+    { "op": "file_contains", "path": "src/main/java/demo/Calculator.java", "text": "left + right" }
+  ],
+  "script": [
+    { "tool": "read_file", "arguments": { "path": "src/main/java/demo/Calculator.java" } },
+    { "tool": "write_file", "arguments": { "path": "src/test/java/demo/CalculatorTest.java", "contentLines": [
+      "package demo;",
+      "",
+      "import org.junit.jupiter.api.Test;",
+      "",
+      "import static org.junit.jupiter.api.Assertions.assertEquals;",
+      "",
+      "class CalculatorTest {",
+      "    @Test",
+      "    void addsTwoNumbers() {",
+      "        assertEquals(5, new Calculator().add(2, 3));",
+      "    }",
+      "}",
+      ""
+    ] } },
+    { "answer": "已新增 src/test/java/demo/CalculatorTest.java 覆盖 add(2, 3) == 5，Calculator 未改动。" }
+  ]
+}

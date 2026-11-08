@@ -1,0 +1,33 @@
+# 构建上下文白名单式裁剪：Dockerfile 只用到 pom.xml 与 src/。
+# 排除版本库元数据、本地产物和秘密文件，既加快上传，也避免把 .env / 状态库带进镜像层。
+
+.git
+.gitignore
+.gitattributes
+
+# 本地字节码与演示产物（scripts/demo.ps1 会写入 target/）
+target
+
+# 本机秘密配置（可能包含真实模型 Key）
+.env
+.env.example
+.superagent-java
+
+# 与运行镜像无关的工程文件
+.idea
+*.iml
+
+# 文档、部署脚本、CI 定义在宿主机执行，不需要进入镜像
+deploy
+docs
+examples
+scripts
+.github
+
+# 镜像自身与本地密码学材料
+docker-compose.yml
+*.md
+*.pem
+*.key
+*.p12
+*.jks

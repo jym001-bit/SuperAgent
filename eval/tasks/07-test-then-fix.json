@@ -1,0 +1,98 @@
+{
+  "id": "test-then-fix",
+  "name": "先跑测试再改：观察失败后修复实现",
+  "prompt": "StringTools.normalize 现在只返回原值，src/test/java/demo/StringToolsTest.java 因此失败。请先运行 mvn -o -B -q test 观察失败，再修改 src/main/java/demo/StringTools.java，让测试通过；不要修改测试文件。",
+  "setup": {
+    "files": {
+      "pom.xml": [
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+        "<project xmlns=\"http://maven.apache.org/POM/4.0.0\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd\">",
+        "  <modelVersion>4.0.0</modelVersion>",
+        "  <groupId>demo</groupId>",
+        "  <artifactId>eval-sample</artifactId>",
+        "  <version>1.0.0</version>",
+        "  <properties>",
+        "    <maven.compiler.release>17</maven.compiler.release>",
+        "    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>",
+        "  </properties>",
+        "  <dependencies>",
+        "    <dependency>",
+        "      <groupId>org.junit.jupiter</groupId>",
+        "      <artifactId>junit-jupiter</artifactId>",
+        "      <version>5.12.1</version>",
+        "      <scope>test</scope>",
+        "    </dependency>",
+        "  </dependencies>",
+        "  <build>",
+        "    <plugins>",
+        "      <plugin>",
+        "        <groupId>org.apache.maven.plugins</groupId>",
+        "        <artifactId>maven-compiler-plugin</artifactId>",
+        "        <version>3.14.0</version>",
+        "      </plugin>",
+        "      <plugin>",
+        "        <groupId>org.apache.maven.plugins</groupId>",
+        "        <artifactId>maven-surefire-plugin</artifactId>",
+        "        <version>3.5.2</version>",
+        "      </plugin>",
+        "    </plugins>",
+        "  </build>",
+        "</project>",
+        ""
+      ],
+      "src/main/java/demo/StringTools.java": [
+        "package demo;",
+        "",
+        "public final class StringTools {",
+        "    private StringTools() {}",
+        "",
+        "    public static String normalize(String raw) {",
+        "        return raw == null ? \"\" : raw;",
+        "    }",
+        "}",
+        ""
+      ],
+      "src/test/java/demo/StringToolsTest.java": [
+        "package demo;",
+        "",
+        "import org.junit.jupiter.api.Test;",
+        "",
+        "import static org.junit.jupiter.api.Assertions.assertEquals;",
+        "",
+        "class StringToolsTest {",
+        "    @Test",
+        "    void trimsAndLowercases() {",
+        "        assertEquals(\"abc\", StringTools.normalize(\"  ABC \"));",
+        "    }",
+        "}",
+        ""
+      ]
+    }
+  },
+  "checks": [
+    { "op": "command", "command": "mvn -o -B -q test", "exitCode": 0, "timeoutSeconds": 300 },
+    { "op": "file_contains", "path": "src/main/java/demo/StringTools.java", "text": "toLowerCase" },
+    { "op": "file_equals", "path": "src/test/java/demo/StringToolsTest.java", "contentLines": [
+      "package demo;",
+      "",
+      "import org.junit.jupiter.api.Test;",
+      "",
+      "import static org.junit.jupiter.api.Assertions.assertEquals;",
+      "",
+      "class StringToolsTest {",
+      "    @Test",
+      "    void trimsAndLowercases() {",
+      "        assertEquals(\"abc\", StringTools.normalize(\"  ABC \"));",
+      "    }",
+      "}",
+      ""
+    ] }
+  ],
+  "script": [
+    { "tool": "execute_command", "arguments": { "command": "mvn -o -B -q test" } },
+    { "tool": "read_file", "arguments": { "path": "src/main/java/demo/StringTools.java" } },
+    { "tool": "edit_file", "arguments": { "path": "src/main/java/demo/StringTools.java", "old_text": "return raw == null ? \"\" : raw;", "new_text": "return raw == null ? \"\" : raw.trim().toLowerCase(java.util.Locale.ROOT);" } },
+    { "tool": "execute_command", "arguments": { "command": "mvn -o -B -q test" } },
+    { "answer": "先运行 mvn -o -B -q test 观察到失败，再把 normalize 改成 trim 加小写，测试文件未改动。" }
+  ]
+}

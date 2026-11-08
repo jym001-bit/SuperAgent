@@ -92,6 +92,7 @@ java -jar .\target\superagent-java.jar --repo D:\你的Git项目
 | `/deny <审批ID>` | 拒绝当前这一次命令，原因作为工具结果反馈 |
 | `/diff <任务ID>` | 导出修改列表和含新增文件的二进制兼容补丁 |
 | `/accept <任务ID>` | 将待验收任务标记为已完成 |
+| `/archive <保留天数>` | 把更早的已结束任务导出到 `archive/*.jsonl` 后从主库清理 |
 | `/help`、`/exit` | 帮助、保存状态并退出 |
 
 `Ctrl+C` 在输入框中只取消本次输入；取消后台任务使用 `/cancel`。`Ctrl+D` 或 `/exit` 退出。
@@ -103,6 +104,8 @@ java -jar .\target\superagent-java.jar --repo D:\你的Git项目
 每个任务记录创建时的 `HEAD`，使用 `git clone --no-hardlinks --no-local` 创建副本，在 `agent/<任务ID>` 分支工作。未提交及未跟踪文件不复制进任务；Git 子模块、LFS 自动下载、外部依赖安装不在首版自动准备范围内。
 
 内置文件工具包括 `list_directory`、`search_text`、`read_file`、`write_file`、`edit_file`。文件读写检查目录边界、符号链接及 Windows 目录联接，拒绝访问 `.git`；编辑必须唯一、精确匹配。文本工具使用 UTF-8，不做自动编码转换。
+
+工具面统一注册在 `ToolRegistry`，每个工具有风险等级。另有只读的 `git_status`、`git_diff`、`git_log`：直接用 argv 调用 git、不经 shell，path 只作为 pathspec 传入，只在任务副本内可用。`run_test` 自动识别 Maven / Gradle / npm / pytest / Cargo / Go，把输出解析成「退出码 + 失败用例 + 结论摘要」再回填上下文；它执行的是仓库里的构建脚本，所以和 `execute_command` 一样**每次都要审批**，不会因为「只是测试」而放行。
 
 `execute_command` 在任务根目录运行，每次执行都要审批。Windows 使用不加载配置的 PowerShell，其他系统使用 `/bin/sh`。命令子进程只继承开发运行必需的环境变量，不自动继承模型 Key；默认 120 秒超时。需要项目专用秘密或特殊环境的命令，应由用户自行运行。
 
@@ -134,6 +137,8 @@ git apply '完整路径\changes.patch'
 
 重启后，尚未启动的任务继续排队，等待人工回答的任务继续等待；执行中的任务暂停为 `INTERRUPTED`。旧的未执行审批失效，恢复时生成新的审批。
 
+状态库使用分表结构：任务骨架存状态与审批，对话和工具调用存追加表，调度只读骨架，所以长对话不会拖慢调度。旧版本的单表状态库在打开时自动迁移，并留一份 `state.db.v1.bak`。送给模型的请求受上下文预算约束，超出后折叠早期轮次为确定性摘要，原始消息一条不删。
+
 执行意图先保存，再执行工具，最后保存结果。若进程恰好在“命令已执行，但结果未保存”的间隙退出，系统不会自动重跑命令。先通过 `/show` 查看目录与日志，再 `/resume`；Worker 会收到结果不明的提示。写文件、精确替换保存预期结果，恢复时可以通过内容核对确认完成。
 
 这提供可检查的恢复行为，不保证任意 Shell 命令具有“恰好一次”效果。模型 API 失败不自动重试整个任务。任务目录损坏或克隆准备不完整时，系统保留现场并报错，不擅自删除目录重新创建。
@@ -151,6 +156,7 @@ git apply '完整路径\changes.patch'
 | `SUPERAGENT_WORKERS` | `2` |
 | `SUPERAGENT_MAX_MODEL_CALLS` | `30`，每个任务本次执行累计 |
 | `SUPERAGENT_MAX_TOKENS` | `100000`，每个任务本次执行累计 |
+| `SUPERAGENT_CONTEXT_TOKENS` | `48000`，单次请求的上下文预算（超出后折叠早期轮次） |
 | `SUPERAGENT_COMMAND_TIMEOUT_SECONDS` | `120` |
 | `SUPERAGENT_HTTP_TIMEOUT_SECONDS` | `120` |
 
@@ -166,6 +172,10 @@ mvn package
 java -jar .\target\superagent-java.jar --help
 ```
 
-测试只使用临时 Git 仓库、模拟模型、本地 HTTP 服务和本地命令，不访问真实模型、不启动 Docker。覆盖审批、并行隔离、追问、取消、预算、路径边界、DeepSeek 思考字段回传、故障和恢复，包括子 JVM 执行外部命令后 `Runtime.halt` 的场景。
+测试只使用临时 Git 仓库、模拟模型、本地 HTTP 服务和本地命令，不访问真实模型、不启动 Docker。当前 76 个测试，覆盖审批、并行隔离、追问、取消、预算、路径边界、DeepSeek 思考字段回传、故障和恢复，包括子 JVM 执行外部命令后 `Runtime.halt` 的场景。
 
-进一步阅读：[架构与代码阅读顺序](docs/architecture.md)、[从演示到真实模型的验收步骤](docs/walkthrough.md)、[首版验收记录](docs/validation.md)。
+内核阶段新增的行为验收：旧库迁移与幂等、对话追加顺序与事务回滚、调度载荷不含对话、并发读写不出现撕裂快照、审计游标、归档安全边界、上下文折叠不破坏锚点与工具协议、指标与真实状态一致、工具注册表契约、真实 git 命令与注入拒绝、评测判据真的会把失败任务判为失败。这些都是「删掉被测逻辑就会红」的用例，没有为凑数写 getter 测试。
+
+`mvn test` 需要完整的进程与命名管道能力：受限沙箱里 `git clone` 会失败并表现为大量超时假失败，这类环境请放宽沙箱或在 Linux 上跑（CI 即如此）。
+
+进一步阅读：[架构与代码阅读顺序](docs/architecture.md)、[企业级演进路线图](docs/roadmap.md)、[运维手册：指标、审计与归档](docs/operations.md)、[从演示到真实模型的验收步骤](docs/walkthrough.md)、[首版验收记录](docs/validation.md)。

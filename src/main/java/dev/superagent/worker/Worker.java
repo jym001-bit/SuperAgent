@@ -6,6 +6,7 @@ import dev.superagent.task.*;
 import dev.superagent.tool.*;
 import com.fasterxml.jackson.databind.*;
 import com.fasterxml.jackson.databind.node.*;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
 import java.util.function.*;
@@ -29,6 +30,11 @@ public final class Worker {
         if(Thread.currentThread().isInterrupted()) throw new Stopped();
         store.update(id,event,t->{ if(t.status!=Task.Status.RUNNING) throw new Stopped(); change.accept(t); });
     }
+    /** 只有真的在追加对话时才写消息表；其余状态推进不读不写历史。 */
+    private void updateConversation(String id,String event,Consumer<Task> change) {
+        if(Thread.currentThread().isInterrupted()) throw new Stopped();
+        store.updateConversation(id,event,t->{ if(t.status!=Task.Status.RUNNING) throw new Stopped(); change.accept(t); });
+    }
     private static final class Stopped extends RuntimeException {}
     public void step(String id) {
         try {
@@ -44,7 +50,7 @@ public final class Worker {
                 tool(task,pending);
                 return;
             }
-            update(id,"inputs_consumed",t->{
+            updateConversation(id,"inputs_consumed",t->{
                 for(Task.Input in:t.inputs) if(!in.consumed) {
                     t.messages.add(Json.message("user",in.text)); in.consumed=true;
                 }
@@ -55,16 +61,22 @@ public final class Worker {
                 notice.accept(id+" 预算耗尽，工作已保留");return;
             }
             update(id,"model_started",t->{ t.calls++; t.progress="等待模型回复"; });
-            var tools = FileTools.specifications();
+            var tools = ToolRegistry.specifications();
             if (!commands.enabled()) {
-                for (int i = tools.size() - 1; i >= 0; i--)
-                    if (tools.get(i).path("function").path("name").asText().equals("execute_command")) tools.remove(i);
+                for (int i = tools.size() - 1; i >= 0; i--) {
+                    String name = tools.get(i).path("function").path("name").asText();
+                    if (name.equals("execute_command") || name.equals("run_test")) tools.remove(i);
+                }
             }
-            ModelClient.Reply reply=model.complete(task.messages,tools);
+            ContextPolicy.Result context=ContextPolicy.prepare(task.messages,ContextPolicy.budget());
+            if(context.trimmed()) notice.accept(id+" 上下文已折叠 "+context.folded()+" 轮早期对话（原始记录仍在历史中）");
+            ModelClient.Reply reply=model.complete(context.messages(),tools);
             ObjectNode message=reply.message();
             List<Task.Call> calls=parseCalls(message);
-            update(id,"model_response",t->{
+            updateConversation(id,"model_response",t->{
                 t.tokens+=Math.max(1,reply.tokens());
+                t.contextTokens=context.estimatedTokens();
+                if(context.trimmed())t.contextTrims++;
                 t.messages.add(message);
                 t.tools.addAll(calls);
                 if(!Set.of("stop","tool_calls").contains(reply.finishReason())) {
@@ -138,12 +150,15 @@ public final class Worker {
                     notice.accept(task.id+" 需要回复："+question+"（/follow "+task.id+" <回答>）");
                 return;
             }
-            if(call.name.equals("execute_command")) {
+            if(call.name.equals("execute_command")||call.name.equals("run_test")) {
                 if (!commands.enabled()) {
                     complete(task.id, call.id, "当前入口已关闭命令执行，请报告未执行的验证。");
                     return;
                 }
-                String command=FileTools.required(args,"command");
+                // run_test 同样执行仓库里的构建脚本，必须走正式审批，不能因为「只是测试」免批。
+                String command=call.name.equals("run_test")
+                        ? "run_test "+Json.text(args)
+                        : FileTools.required(args,"command");
                 if(call.phase==Task.Phase.PENDING) {
                     Task.Approval approval=new Task.Approval(call.id,command,task.workspace);
                     update(task.id,"approval_requested",t->{
@@ -156,6 +171,21 @@ public final class Worker {
                 if(approval.decision.equals("DENIED")) { complete(task.id,call.id,"用户拒绝执行该命令，请换方法或询问用户。");return; }
                 if(!approval.decision.equals("APPROVED")||!approval.command.equals(command)||!approval.cwd.equals(task.workspace))
                     throw new IllegalStateException("审批已失效，需要重新申请");
+                if(call.name.equals("run_test")) {
+                    Path log=config.stateDir().resolve("logs").resolve(task.id).resolve("test-"+UUID.randomUUID()+".log");
+                    update(task.id,"test_started",t->{
+                        Task.Call c=find(t,call.id);c.phase=Task.Phase.EXECUTING;c.logPath=log.toString();
+                        t.approvals.stream().filter(a->a.id.equals(call.approvalId)).findFirst().orElseThrow().decision="USED";
+                        t.progress="测试命令执行中";
+                    });
+                    String output=ToolRegistry.execute(call.name,args,Path.of(task.workspace));
+                    Files.createDirectories(log.getParent());
+                    Files.writeString(log,output,StandardCharsets.UTF_8);
+                    update(task.id,"test_result",t->{
+                        t.validations.add(digest(output));
+                        Task.Call c=find(t,call.id);c.result=output;c.phase=Task.Phase.DONE;t.status=Task.Status.QUEUED;
+                    });return;
+                }
                 Path log=config.stateDir().resolve("logs").resolve(task.id).resolve("command-"+UUID.randomUUID()+".log");
                 update(task.id,"command_started",t->{
                     Task.Call c=find(t,call.id);c.phase=Task.Phase.EXECUTING;c.logPath=log.toString();
@@ -169,8 +199,7 @@ public final class Worker {
                     Task.Call c=find(t,call.id);c.result=output;c.phase=Task.Phase.DONE;t.status=Task.Status.QUEUED;
                 });return;
             }
-            Set<String> fileNames=Set.of("read_file","write_file","edit_file","search_text","list_directory");
-            if(!fileNames.contains(call.name))throw new IllegalArgumentException("未知工具: "+call.name);
+            if(!ToolRegistry.known(call.name))throw new IllegalArgumentException("未知工具: "+call.name);
             FileTools files=new FileTools(Path.of(task.workspace));
             String expectedPath=null,expectedContent=null;
             if(call.name.equals("write_file")||call.name.equals("edit_file")) {
@@ -191,7 +220,7 @@ public final class Worker {
                 Task.Call c=find(t,call.id);c.phase=Task.Phase.EXECUTING;c.expectedPath=pathIntent;c.expectedContent=contentIntent;
                 t.progress="工具: "+call.name;
             });
-            String result=files.execute(call.name,args);
+            String result=ToolRegistry.execute(call.name,args,Path.of(task.workspace));
             complete(task.id,call.id,result);
         } catch(Stopped|InterruptedException e) {throw e;}
         catch(Exception e) {
@@ -210,11 +239,15 @@ public final class Worker {
         update(id,"tool_result",t->{Task.Call c=find(t,callId);c.result=FileTools.bounded(result);c.phase=Task.Phase.DONE;t.status=Task.Status.QUEUED;});
     }
     private void append(String id,String callId) {
-        update(id,"tool_result_delivered",t->{
+        updateConversation(id,"tool_result_delivered",t->{
             Task.Call c=find(t,callId);
             t.messages.add(Json.message("tool",c.result).put("tool_call_id",callId));c.appended=true;t.status=Task.Status.QUEUED;
         });
     }
     public static Task.Call find(Task t,String id) {return t.tools.stream().filter(c->c.id.equals(id)&&!c.appended).findFirst().orElseThrow();}
+    private static String digest(String output) {
+        for (String line : output.split("\n")) if (!line.isBlank()) return line.strip();
+        return "run_test => 无输出";
+    }
     private static String shorten(String s) {return s.length()>180?s.substring(0,180)+"…":s;}
 }

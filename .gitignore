@@ -2,6 +2,7 @@ target/
 .idea/
 *.iml
 .env
+deploy/service.env
 .superagent-java/
 *.db
 *.db-shm

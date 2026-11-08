@@ -1,0 +1,31 @@
+{
+  "id": "hello-output",
+  "name": "单文件修改：改掉 Hello 的输出",
+  "prompt": "把 src/main/java/demo/Hello.java 控制台输出的问候语改成 Hello, Super-agent!。保留包名、类名和方法签名，不要修改其他文件。",
+  "setup": {
+    "files": {
+      "src/main/java/demo/Hello.java": [
+        "package demo;",
+        "",
+        "public final class Hello {",
+        "    private Hello() {}",
+        "",
+        "    public static void main(String[] args) {",
+        "        System.out.println(\"Hello, world!\");",
+        "    }",
+        "}",
+        ""
+      ]
+    }
+  },
+  "checks": [
+    { "op": "file_contains", "path": "src/main/java/demo/Hello.java", "text": "Hello, Super-agent!" },
+    { "op": "command", "command": "javac -d out src/main/java/demo/Hello.java", "exitCode": 0, "timeoutSeconds": 120 },
+    { "op": "command", "command": "java -cp out demo.Hello", "exitCode": 0, "outputContains": "Hello, Super-agent!", "timeoutSeconds": 120 }
+  ],
+  "script": [
+    { "tool": "read_file", "arguments": { "path": "src/main/java/demo/Hello.java" } },
+    { "tool": "edit_file", "arguments": { "path": "src/main/java/demo/Hello.java", "old_text": "\"Hello, world!\"", "new_text": "\"Hello, Super-agent!\"" } },
+    { "answer": "已把 Hello 的输出改为 Hello, Super-agent!，只修改了 Hello.java。" }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "id": "exact-config-file",
+  "name": "精确内容写入并清理遗留文件",
+  "prompt": "仓库根目录的 debug.log 是遗留的调试输出，请删除它；并新建 config/app.properties，内容恰好两行：version=1.0.0 和 mode=eval（末尾是否带换行不限）。不要修改其他文件。",
+  "setup": {
+    "files": {
+      "debug.log": [
+        "noise from an old debugging session",
+        "temporary output"
+      ],
+      "src/main/java/demo/App.java": [
+        "package demo;",
+        "",
+        "public final class App {",
+        "    private App() {}",
+        "",
+        "    public static void main(String[] args) {",
+        "        System.out.println(\"app started\");",
+        "    }",
+        "}",
+        ""
+      ]
+    }
+  },
+  "checks": [
+    { "op": "file_absent", "path": "debug.log" },
+    { "op": "file_equals", "path": "config/app.properties", "contentLines": [ "version=1.0.0", "mode=eval" ] },
+    { "op": "file_contains", "path": "src/main/java/demo/App.java", "text": "class App" }
+  ],
+  "script": [
+    { "tool": "list_directory", "arguments": { "path": "." } },
+    { "tool": "execute_command", "arguments": { "command": "git rm -q debug.log" } },
+    { "tool": "write_file", "arguments": { "path": "config/app.properties", "contentLines": [ "version=1.0.0", "mode=eval" ] } },
+    { "answer": "已删除 debug.log 并新建 config/app.properties（version=1.0.0 与 mode=eval 两行），其他文件未改动。" }
+  ]
+}

@@ -1,0 +1,81 @@
+# Super-agent Java 单实例容器编排（Linux）。
+#
+# 前置条件（首次部署）：
+#   1) cp deploy/service.env.example deploy/service.env && chmod 600 deploy/service.env
+#      （该文件含模型 Key 与运维令牌，不要提交到版本库）
+#   2) mkdir -p source && git clone <目标仓库> source
+#      并让容器内 uid 10001 能读取：sudo chown -R 10001:10001 source
+#      （应用给 git 子进程设置了 GIT_CONFIG_NOSYSTEM=1 / GIT_CONFIG_GLOBAL=/dev/null，
+#        无法用 safe.directory 绕过所有权检查，因此必须对齐属主）
+#   3) docker compose up -d --build
+#
+# 容器内运行 --serve-local（本地 HTTP 入口，命令执行被禁用）。
+# GitHub 常驻服务（--serve）需要宿主机 rootless Docker CLI 与 socket，
+# 把 socket 挂进容器等于放弃隔离，因此继续按 docs/service.md 用 systemd 部署。
+name: superagent
+
+services:
+  superagent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        UID: "10001"
+        GID: "10001"
+        VERSION: "0.1.0"
+    image: superagent-java:0.1.0
+    container_name: superagent
+    restart: unless-stopped
+
+    # 秘密配置从本机文件读取（systemd 部署复用同一份文件，见 deploy/service.env.example）。
+    env_file:
+      - ./deploy/service.env
+    environment:
+      # env_file 里的状态目录是宿主机路径（systemd 使用），容器内统一覆盖到命名卷挂载点。
+      SUPERAGENT_STATE_DIR: /app/state
+
+    volumes:
+      # 状态目录：SQLite、任务工作副本、交付物、日志，必须持久化。
+      - superagent-state:/app/state
+      # 目标仓库只读挂载：应用只读取已提交基线，不会修改 source。
+      - ./source:/app/source:ro
+
+    # 应用硬编码监听 127.0.0.1，bridge 网络的 ports 发布无法到达容器回环地址。
+    # 用 host 网络让 8080 只监听宿主机 127.0.0.1（不暴露到 0.0.0.0），
+    # 安全目标等价于 ports: ["127.0.0.1:8080:8080"]；此时不能再写 ports。
+    # 若必须用 bridge 网络，需要先改应用监听地址，属于代码变更，不在本交付范围。
+    network_mode: host
+
+    user: "10001:10001"
+    # 只读根文件系统：状态目录走命名卷，临时文件走 tmpfs，其余路径不可写。
+    read_only: true
+    tmpfs:
+      # sqlite-jdbc 会从 java.io.tmpdir 解压并 dlopen 原生库，
+      # 因此 /tmp 必须可写且允许执行，不能加 noexec。
+      - /tmp:rw,nosuid,nodev,size=256m,mode=1777
+
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    # 资源上限：防止任务/模型并发拖垮宿主机。JVM 的 MaxRAMPercentage=75 依赖 cgroup 限制
+    # 获取容器内存，因此 mem_limit 必须设置，否则 JVM 会按宿主机内存计算堆。
+    pids_limit: 256
+    mem_limit: 2g
+    cpus: 2.0
+
+    # 与 systemd TimeoutStopSec 对齐：给 SQLite 和进程内任务留正常关闭时间。
+    stop_grace_period: 45s
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/readyz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+
+volumes:
+  # 显式命名，便于 deploy/backup.sh 之外的运维手工定位与备份。
+  superagent-state:
+    name: superagent-state

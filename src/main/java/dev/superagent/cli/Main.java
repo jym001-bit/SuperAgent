@@ -118,6 +118,8 @@ public final class Main {
                 out.accept(t.id+" | "+t.status+"\n需求: "+t.prompt+"\n进展: "+t.progress+"\n问题: "+t.question
                         +"\n基线: "+t.baseCommit+"\n目录: "+t.workspace+"\n本次模型调用: "+t.calls+" | Token: "+t.tokens
                         +"\nWorker 单任务预算: "+tasks.callLimit()+" 次模型调用 / "+tasks.tokenLimit()+" Token"
+                        +"\n上下文: 已折叠 "+t.contextTrims+" 次 / 最近请求约 "+t.contextTokens+" token"
+                        +"\n工具调用: "+t.tools.size()+" 次"+toolSummary(t)
                         +"\n错误: "+t.error+"\n未完成工具: "+pendingInfo+"\n结果:\n"+t.result+"\n验证记录:\n"+String.join("\n",t.validations));
                 if (t.planned) {
                     for (TaskPlan.Node node : t.plan) {
@@ -142,6 +144,18 @@ public final class Main {
                 Task task = tasks.resolve(id(rest));
                 out.accept(task.id + " | " + task.progress);
             }
+            case "/archive" -> {
+                require(rest, "/archive <保留天数>");
+                int days;
+                try { days = Integer.parseInt(rest.strip()); }
+                catch (NumberFormatException e) { throw new IllegalArgumentException("保留天数必须是整数"); }
+                if (days < 0) throw new IllegalArgumentException("保留天数不能为负");
+                var summary = tasks.archiveOlderThan(java.time.Duration.ofDays(days));
+                if (summary.tasks() == 0) out.accept("没有可归档的已结束任务。");
+                else out.accept("已归档 " + summary.tasks() + " 个已结束任务（对话 " + summary.messages()
+                        + " 条，工具调用 " + summary.calls() + " 条，事件 " + summary.events()
+                        + " 条）到 " + summary.file());
+            }
             case "/resume" -> {tasks.resume(id(rest));out.accept("已恢复；本次预算重置，未知结果的旧命令不会自动重放。");}
             case "/accept" -> {tasks.accept(id(rest));out.accept("已验收；源仓库未修改。");}
             case "/approvals" -> {
@@ -159,6 +173,19 @@ public final class Main {
         }
     }
     private static String id(String rest){require(rest,"需要一个任务或审批 ID");if(rest.contains(" "))throw new IllegalArgumentException("只允许一个 ID");return rest;}
+    private static String toolSummary(Task task) {
+        if (task.tools.isEmpty()) return "";
+        Map<String, Integer> counts = new java.util.LinkedHashMap<>();
+        for (Task.Call call : task.tools) counts.merge(call.name, 1, Integer::sum);
+        StringBuilder text = new StringBuilder("（");
+        boolean first = true;
+        for (var entry : counts.entrySet()) {
+            if (!first) text.append(", ");
+            text.append(entry.getKey()).append('×').append(entry.getValue());
+            first = false;
+        }
+        return text.append('）').toString();
+    }
     private static void require(String value,String usage){if(value.isBlank())throw new IllegalArgumentException(usage);}
     private static String shorten(String s){return s.length()>90?s.substring(0,90)+"…":s;}
     private static final String HELP="""
@@ -175,6 +202,7 @@ public final class Main {
             /deny <审批ID>              拒绝这一次命令
             /diff <任务ID>              导出含新增文件的补丁
             /resolve <父任务ID>         手工处理合成冲突后重新导出
+            /archive <保留天数>          把更早的已结束任务导出到状态目录 archive 后清理
             /accept <任务ID>            验收完成，不自动应用到源仓库
             /help                       查看帮助
             /exit                       保存状态并退出

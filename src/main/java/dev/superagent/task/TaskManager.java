@@ -24,6 +24,8 @@ public final class TaskManager implements AutoCloseable {
     private final ModelClient model;
     private final PlanExecution plans;
     private final boolean recoverSafeSteps;
+    private final Object wake = new Object();
+    private boolean pending;
     private volatile boolean closed;
     private String lastDispatched="";
     public TaskManager(Config config,Store store,ModelClient model,Path repo,Consumer<String> notice) throws Exception {
@@ -47,7 +49,16 @@ public final class TaskManager implements AutoCloseable {
     private static ThreadFactory factory(String prefix) {
         return r->{Thread t=new Thread(r,"superagent-"+prefix);t.setDaemon(true);return t;};
     }
-    public void start() {scheduler.scheduleWithFixedDelay(this::dispatch,0,30,TimeUnit.MILLISECONDS);}
+    /** 有活可干时立即唤醒调度，250 毫秒兜底轮询只用于覆盖遗漏的路径。 */
+    public void start() {scheduler.execute(this::loop);}
+    private void loop() {
+        while(!closed) {
+            try { synchronized(wake) { if(!pending) wake.wait(250); pending=false; } }
+            catch(InterruptedException e) { Thread.currentThread().interrupt(); return; }
+            dispatch();
+        }
+    }
+    private void notifyWork() { synchronized(wake) { pending = true; wake.notifyAll(); } }
     private synchronized void dispatch() {
         if(closed)return;
         try {
@@ -79,6 +90,7 @@ public final class TaskManager implements AutoCloseable {
                 finally {
                     processes.remove(id);
                     active.remove(id, this);
+                    notifyWork();
                 }
             }
         };
@@ -122,21 +134,25 @@ public final class TaskManager implements AutoCloseable {
         }
         try {
             TaskPlan.Proposal proposal = TaskPlan.propose(model, goal);
-            return store.update(parent.id, "plan_proposed", t -> {
+            Task planned = store.update(parent.id, "plan_proposed", t -> {
                 PlanExecution.requireState(t, Task.Status.PLANNING);
                 t.plan = proposal.nodes();
                 t.tokens = proposal.tokens();
                 t.status = Task.Status.PLAN_READY;
                 t.progress = "请检查计划后用 /start 批准";
             });
+            notifyWork();
+            return planned;
         } catch (Exception error) {
             if (error instanceof InterruptedException) Thread.currentThread().interrupt();
-            return store.update(parent.id, "planning_stopped", t -> {
+            Task failed = store.update(parent.id, "planning_stopped", t -> {
                 if (t.status != Task.Status.PLANNING) return;
                 t.status = Task.Status.FAILED;
                 t.error = Objects.toString(error.getMessage(), error.getClass().getSimpleName());
                 t.progress = "规划失败，可重新提交计划";
             });
+            notifyWork();
+            return failed;
         }
     }
 
@@ -157,6 +173,7 @@ public final class TaskManager implements AutoCloseable {
             children.put(node.key(), child);
         }
         store.startPlan(id, children);
+        notifyWork();
         return store.get(id);
     }
     public synchronized Task create(String prompt) throws Exception {
@@ -164,14 +181,17 @@ public final class TaskManager implements AutoCloseable {
         Workspaces.Source source=workspaces.inspect(repo);
         Task t = newTask(prompt, source);
         store.create(t);
+        notifyWork();
         notice.accept("已创建 "+t.id+"，基线 "+t.baseCommit.substring(0,12)+(source.dirty()?"；源目录有未提交改动，这些改动未进入副本":""));
         return t;
     }
     public synchronized Store.Receipt receiveComment(String event, String delivery, long actor, String thread,
                                                        String initial, String followup) throws Exception {
         Workspaces.Source source = workspaces.snapshot(repo);
-        return store.receiveComment(event, delivery, actor, thread, () -> newTask(initial, source),
+        Store.Receipt receipt = store.receiveComment(event, delivery, actor, thread, () -> newTask(initial, source),
                 task -> addInput(task, followup));
+        notifyWork();
+        return receipt;
     }
     private Task newTask(String prompt, Workspaces.Source source) {
         Task t=new Task();t.id="task_"+UUID.randomUUID().toString().replace("-", "");t.prompt=prompt;
@@ -191,6 +211,7 @@ public final class TaskManager implements AutoCloseable {
             }
             addInput(t,text);
         });
+        notifyWork();
     }
     private static void addInput(Task t, String text) {
             Task.Input input=new Task.Input(text);t.inputs.add(input);
@@ -211,7 +232,7 @@ public final class TaskManager implements AutoCloseable {
                 if(t.status!=Task.Status.WAITING_APPROVAL||!a.decision.equals("PENDING")||c==null||!approvalId.equals(c.approvalId))
                     throw new IllegalArgumentException("审批已处理或失效");
                 a.decision=allow?"APPROVED":"DENIED";t.status=Task.Status.QUEUED;t.progress=allow?"命令已批准":"命令已拒绝";
-            });return;
+            });notifyWork();return;
         }
         throw new IllegalArgumentException("审批不存在: "+approvalId);
     }
@@ -224,6 +245,7 @@ public final class TaskManager implements AutoCloseable {
             store.update(id, "canceled", TaskManager::markCanceled);
         }
         stopActive(id);
+        notifyWork();
     }
     private static void markCanceled(Task task) {
         if (task.status == Task.Status.COMPLETED || task.status == Task.Status.CANCELED)
@@ -236,7 +258,8 @@ public final class TaskManager implements AutoCloseable {
         FutureTask<Void> future=active.get(id);if(future!=null)future.cancel(true);
         Processes.kill(processes.get(id));
     }
-    public synchronized void resume(String id) {
+    public synchronized void resume(String id) { resumeImpl(id); notifyWork(); }
+    private void resumeImpl(String id) {
         if(active.containsKey(id))throw new IllegalStateException("任务仍在停止，请稍后恢复");
         Task before=store.get(id);
         if (before.planned) {
@@ -360,6 +383,9 @@ public final class TaskManager implements AutoCloseable {
             t.progress = "补丁已验收，草稿 PR 等待发布";
         });
     }
+    public Store.ArchiveSummary archiveOlderThan(java.time.Duration retention) throws Exception {
+        return store.archiveBefore(Instant.now().minus(retention), config.stateDir().resolve("archive"));
+    }
     public List<Task> list(){return store.list();}
     public Task get(String id){return store.get(id);}
     private void recover() {
@@ -405,7 +431,7 @@ public final class TaskManager implements AutoCloseable {
     }
     private static void requireText(String text) {if(text==null||text.isBlank())throw new IllegalArgumentException("内容不能为空");}
     @Override public synchronized void close() {
-        if(closed)return;closed=true;scheduler.shutdownNow();
+        if(closed)return;closed=true;notifyWork();scheduler.shutdownNow();
         for(Task task:store.list())if(task.status==Task.Status.RUNNING||task.status==Task.Status.WAITING_APPROVAL)
             store.update(task.id,"shutdown",t->{t.status=canRequeue(t)?Task.Status.QUEUED:Task.Status.INTERRUPTED;t.progress="程序退出，工作已保留";expire(t);});
         for(FutureTask<Void> f:active.values())f.cancel(true);

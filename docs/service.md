@@ -82,3 +82,49 @@ agent_api -H 'Content-Type: application/json' \
 - 本版本覆盖明确授权的 GitHub 评论触发、工单关联和受审批交付。文章中的主动观察与判断、跨渠道关联、分布式 Worker、高可用和企业 SSO 仍需独立实施与验收。
 
 当前自动验证使用本地 HTTP 模型替身和远端故障替身。部署验收须在真实 Linux 主机完成：授权评论触发、真实模型读写、容器执行项目检查、任务取消回收容器、补丁哈希审批、GitHub 草稿 PR 及重启后的去重与恢复。
+
+## 容器化部署（未在真机验证）
+
+容器镜像由 `Dockerfile` 多阶段构建（`maven:3.9-eclipse-temurin-17` → `eclipse-temurin:17-jre-jammy`），运行镜像非 root（uid/gid 10001）、只包含 fat jar 与 git/curl/CA 证书，入口固定为 `java -XX:MaxRAMPercentage=75 -jar /app/superagent-java.jar`。编排见 `docker-compose.yml`：只读根文件系统、`tmpfs: /tmp`、`no-new-privileges`、`cap_drop: ALL`、命名卷挂状态目录、端口只在本机回环。
+
+**适用范围与限制**：容器内默认运行 `--serve-local`（本地 HTTP 入口，命令执行被禁用）。GitHub 常驻服务 `--serve` 启动时会强制检查宿主机的 rootless Docker（context 必须是本机 Unix socket、cgroup v2、能清理遗留沙箱），容器内没有该 CLI 与 socket；把 socket 挂进容器等于把宿主用户的容器创建权限交出去，因此 **`--serve` 继续用 systemd 部署**，不做容器化。若后续要求 `--serve` 容器化，需先单独设计 Docker socket 委派/DinD 方案并重做安全评审。
+
+启动步骤：
+
+```bash
+cp deploy/service.env.example deploy/service.env && chmod 600 deploy/service.env
+# 填写 SUPERAGENT_API_KEY、>=32 字符的 SUPERAGENT_OPERATOR_TOKEN 等；该文件不要提交
+mkdir -p source && git clone <目标仓库> source
+sudo chown -R 10001:10001 source     # git 所有权检查无法通过 safe.directory 绕过
+docker compose up -d --build
+docker compose ps && curl -fsS http://127.0.0.1:8080/readyz
+```
+
+为什么用 `network_mode: host` 而不是 `ports`：应用硬编码绑定 `127.0.0.1`，bridge 网络的端口发布到不了容器回环地址；host 网络下 8080 仍然只监听宿主机 `127.0.0.1`，不会暴露到 `0.0.0.0`，安全目标与 `127.0.0.1:8080:8080` 等价。若必须用 bridge 网络，需要改动应用监听地址（代码变更），不在当前范围。
+
+### 容器化验收清单
+
+**容器镜像尚未在真机验证**（开发机没有 Docker，只做了 Dockerfile/compose 的静态复核），首次部署必须按下列清单逐项执行并记录结果，未完成前不得视为可交付：
+
+| # | 验收项 | 通过标准 | 状态 |
+|---:|---|---|---|
+| 1 | 秘密文件与仓库 | `deploy/service.env` 存在、权限 600、未提交；`source` 已 clone 且属主 10001 | 待验收 |
+| 2 | 镜像构建 | `docker compose build` 成功；`docker image inspect` 显示 `USER 10001` | 待验收 |
+| 3 | 非 root 与只读根 | `docker compose exec superagent id` 为 uid 10001；对 `/` 写入返回只读错误 | 待验收 |
+| 4 | 状态持久化 | 命名卷 `superagent-state` 挂到 `/app/state`，重启容器后任务仍在 | 待验收 |
+| 5 | 健康检查 | `docker compose ps` 显示 healthy，`curl -fsS http://127.0.0.1:8080/readyz` 返回 200 | 待验收 |
+| 6 | 监听范围 | `ss -lntp` 只在 `127.0.0.1:8080` 监听，不出现 `0.0.0.0:8080` | 待验收 |
+| 7 | 能力与提权 | `docker inspect` 中 `CapDrop: [ALL]`、`SecurityOpt: [no-new-privileges:true]`、`ReadonlyRootfs: true` | 待验收 |
+| 8 | 备份恢复 | `deploy/backup.sh --scope none` 生成归档并通过 `sha256sum -c`，解包后可启动并读回任务 | 待验收 |
+| 9 | 真实模型调用 | 用测试仓库提交一次任务，确认模型读写与补丁下载正常 | 待验收 |
+| 10 | 容器内命令执行边界 | 确认 `--serve-local` 下命令执行被禁用；需要沙箱时改用 systemd 的 `--serve` | 待验收 |
+
+备份与日志：宿主机用 `deploy/backup.sh`（先停服务，`sqlite3 .backup` 一致性快照，保留 N 份），容器日志用 `docker compose logs`。完整说明见 [CI、发布与容器化交付说明](ci.md)。
+
+## CI 门禁
+
+`.github/workflows/ci.yml` 在 `ubuntu-latest` 上以 JDK 17 与 21 双版本矩阵运行 `mvn -B -ntp verify`，使用 `actions/setup-java` 的 Maven 缓存，同分支新提交会取消旧跑，超时 25 分钟，失败时上传 `target/surefire-reports`。测试是离线的（临时 Git 仓库、本地 HTTP 模型替身、子 JVM 崩溃恢复），但临时仓库需要提交，所以流水线先配置 `git config --global` 的 `user.name`/`user.email` 和 `init.defaultBranch=main`；`ubuntu-latest` 自带 git，满足依赖。CI 只在 Linux 运行：Windows 上 git 命名管道/文件锁、符号链接（测试改用目录联接）与子 JVM 进程树语义不同，不能作为发布门禁。
+
+发布用 `.github/workflows/release.yml`：推送 `v*` 标签（或手动触发并填 `tag`）时，校验标签名等于 `v` 加 `pom.xml` 中的项目版本，执行 `mvn -B -ntp -DskipTests package`，生成并上传 `superagent-java.jar` 与 `superagent-java.jar.sha256` 到 GitHub Release，同时保留 workflow artifact。
+
+部署时以 CI 产物为准：先合并到 `main` 并让双 JDK 门禁变绿，再打标签；部署前用 `sha256sum -c superagent-java.jar.sha256` 校验下载的 jar，再按上面的 systemd 或容器流程安装。systemd 与镜像使用同一个 jar，不允许在部署机上重新打包。

@@ -1,0 +1,47 @@
+{
+  "id": "read-only-analysis",
+  "name": "只读分析：指出缺陷与硬编码值",
+  "prompt": "只读分析，不要修改任何文件。指出 FixedQueue.size() 的缺陷（回答中必须逐字引用它返回的表达式），并引用 Config.TIMEOUT_MS 的具体数值。只输出分析结论，不需要补丁。",
+  "setup": {
+    "files": {
+      "src/main/java/demo/FixedQueue.java": [
+        "package demo;",
+        "",
+        "public final class FixedQueue<E> {",
+        "    private final Object[] items = new Object[16];",
+        "    private int count;",
+        "",
+        "    public void add(E item) {",
+        "        items[count++] = item;",
+        "    }",
+        "",
+        "    public int size() {",
+        "        return items.length;",
+        "    }",
+        "}",
+        ""
+      ],
+      "src/main/java/demo/Config.java": [
+        "package demo;",
+        "",
+        "public final class Config {",
+        "    private Config() {}",
+        "",
+        "    public static final int TIMEOUT_MS = 30000;",
+        "}",
+        ""
+      ]
+    }
+  },
+  "checks": [
+    { "op": "answer_contains", "text": "items.length" },
+    { "op": "answer_contains", "text": "30000" },
+    { "op": "no_changes" }
+  ],
+  "script": [
+    { "tool": "list_directory", "arguments": { "path": "src/main/java/demo" } },
+    { "tool": "read_file", "arguments": { "path": "src/main/java/demo/FixedQueue.java" } },
+    { "tool": "read_file", "arguments": { "path": "src/main/java/demo/Config.java" } },
+    { "answer": "FixedQueue.size() 的缺陷是直接返回 items.length：数组容量固定为 16，所以 size() 永远返回 16，而不是实际入队数量 count，应改为 return count。Config.TIMEOUT_MS 的硬编码值是 30000 毫秒。按要求未修改任何文件。" }
+  ]
+}

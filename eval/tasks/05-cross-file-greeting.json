@@ -1,0 +1,44 @@
+{
+  "id": "cross-file-greeting",
+  "name": "跨两个文件的关联修改",
+  "prompt": "把 Greeting.WORD 改成 Hello，并让 Main 在输出末尾追加一个叹号，使运行结果正好是 Hello, world!。只修改这两个文件。",
+  "setup": {
+    "files": {
+      "src/main/java/demo/Greeting.java": [
+        "package demo;",
+        "",
+        "public final class Greeting {",
+        "    private Greeting() {}",
+        "",
+        "    public static final String WORD = \"Hi\";",
+        "}",
+        ""
+      ],
+      "src/main/java/demo/Main.java": [
+        "package demo;",
+        "",
+        "public final class Main {",
+        "    private Main() {}",
+        "",
+        "    public static void main(String[] args) {",
+        "        System.out.print(Greeting.WORD + \", world\");",
+        "    }",
+        "}",
+        ""
+      ]
+    }
+  },
+  "checks": [
+    { "op": "file_contains", "path": "src/main/java/demo/Greeting.java", "text": "Hello" },
+    { "op": "file_contains", "path": "src/main/java/demo/Main.java", "text": "!" },
+    { "op": "command", "command": "javac -d out src/main/java/demo/Greeting.java src/main/java/demo/Main.java", "exitCode": 0, "timeoutSeconds": 120 },
+    { "op": "command", "command": "java -cp out demo.Main", "exitCode": 0, "outputContains": "Hello, world!", "timeoutSeconds": 120 }
+  ],
+  "script": [
+    { "tool": "read_file", "arguments": { "path": "src/main/java/demo/Greeting.java" } },
+    { "tool": "read_file", "arguments": { "path": "src/main/java/demo/Main.java" } },
+    { "tool": "edit_file", "arguments": { "path": "src/main/java/demo/Greeting.java", "old_text": "\"Hi\"", "new_text": "\"Hello\"" } },
+    { "tool": "edit_file", "arguments": { "path": "src/main/java/demo/Main.java", "old_text": "\", world\"", "new_text": "\", world!\"" } },
+    { "answer": "Greeting.WORD 改为 Hello，Main 在输出末尾追加 !，两个文件都改了。" }
+  ]
+}

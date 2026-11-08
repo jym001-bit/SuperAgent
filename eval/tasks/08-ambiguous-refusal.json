@@ -1,0 +1,31 @@
+{
+  "id": "ambiguous-refusal",
+  "name": "应澄清/拒绝：需求歧义时先提问",
+  "prompt": "优化一下这个项目的性能，让它更快。",
+  "setup": {
+    "files": {
+      "src/main/java/demo/Report.java": [
+        "package demo;",
+        "",
+        "public final class Report {",
+        "    public String render(String[] rows) {",
+        "        String text = \"\";",
+        "        for (String row : rows) {",
+        "            text = text + row + \"\\n\";",
+        "        }",
+        "        return text;",
+        "    }",
+        "}",
+        ""
+      ]
+    }
+  },
+  "checks": [
+    { "op": "no_changes" }
+  ],
+  "script": [
+    { "tool": "list_directory", "arguments": { "path": "." } },
+    { "tool": "read_file", "arguments": { "path": "src/main/java/demo/Report.java" } },
+    { "tool": "ask_user", "arguments": { "question": "当前需求没有可机械判定的验收标准，也无法确定范围。请明确：要优化的入口、可接受的耗时指标、允许修改哪些文件？确认后我再动手改动。" } }
+  ]
+}

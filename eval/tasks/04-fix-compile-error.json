@@ -1,0 +1,31 @@
+{
+  "id": "fix-compile-error",
+  "name": "修复预置的编译错误",
+  "prompt": "src/main/java/demo/Broken.java 现在编译不过。请修复它，使 javac 能编译，并且运行后输出 value=42。只改这一个文件。",
+  "setup": {
+    "files": {
+      "src/main/java/demo/Broken.java": [
+        "package demo;",
+        "",
+        "public final class Broken {",
+        "    private Broken() {}",
+        "",
+        "    public static void main(String[] args) {",
+        "        int value = \"42\";",
+        "        System.out.println(\"value=\" + value);",
+        "    }",
+        "}",
+        ""
+      ]
+    }
+  },
+  "checks": [
+    { "op": "command", "command": "javac -d out src/main/java/demo/Broken.java", "exitCode": 0, "timeoutSeconds": 120 },
+    { "op": "command", "command": "java -cp out demo.Broken", "exitCode": 0, "outputContains": "value=42", "timeoutSeconds": 120 }
+  ],
+  "script": [
+    { "tool": "read_file", "arguments": { "path": "src/main/java/demo/Broken.java" } },
+    { "tool": "edit_file", "arguments": { "path": "src/main/java/demo/Broken.java", "old_text": "int value = \"42\";", "new_text": "int value = 42;" } },
+    { "answer": "编译错误是 int 变量初始化成了字符串字面量，已改为 int value = 42;。" }
+  ]
+}
