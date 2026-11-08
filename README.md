@@ -1,5 +1,7 @@
 # Super-agent Java
 
+[![ci](https://github.com/jym001-bit/SuperAgent/actions/workflows/ci.yml/badge.svg)](https://github.com/jym001-bit/SuperAgent/actions/workflows/ci.yml)
+
 Java 编码助手。通过 CLI 或本地 API 提交任务，批准复杂任务的依赖计划后，由多个 Worker 并行处理并交付一个总补丁。计划、对话、工具结果、审批和补丁哈希保存在 SQLite。
 
 这是独立项目，不依赖 PaiCLI，不需要安装 DeepSeek Harness。参考了 [DeepSeek Super-agent 公开原型](https://github.com/deepseek-ai/dsh-superagent-prototype) 的设计思路，没有复制它的源码，也不代表完整复现 DeepSeek 内部系统。
