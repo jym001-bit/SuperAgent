@@ -32,7 +32,14 @@ public final class TestSupport {
         assertTrue(condition.getAsBoolean(),"condition did not become true within 15s");
     }
     public static void status(TaskManager manager,String id,Task.Status state)throws Exception {
-        await(()->manager.get(id).status==state);
+        long end=System.nanoTime()+Duration.ofSeconds(15).toNanos();
+        while(manager.get(id).status!=state&&System.nanoTime()<end)Thread.sleep(20);
+        Task task=manager.get(id);
+        // 失败时必须能看出任务卡在哪个状态、缺什么，否则只能靠猜（CI 上尤其如此）。
+        assertEquals(state,task.status,()->"任务 "+id+" 未达到 "+state+"；当前="+task.status
+                +", 进展="+task.progress+", 错误="+task.error+", 问题="+task.question
+                +", 未完成工具="+(task.outstanding()==null?"无":task.outstanding().name+"/"+task.outstanding().phase)
+                +", 调用次数="+task.calls+", 验证="+task.validations);
     }
     public static ModelClient.Reply call(String name,ObjectNode args) {
         ObjectNode message=Json.message("assistant","");
